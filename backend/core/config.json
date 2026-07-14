@@ -1,0 +1,12 @@
+{
+  "egg_gram_weight": 50,
+  "gelatin_sheet_grams": 2,
+  "gelatine_mass_ratio": 6,
+  "suspicious_qty_grams": 100000,
+  "_notes": {
+    "egg_gram_weight": "grams per 1 whole egg",
+    "gelatin_sheet_grams": "pure gelatin per professional sheet",
+    "gelatine_mass_ratio": "grams of Gelatine Mass per 1 g pure gelatin (1 part gelatin : 5 parts water = 6)",
+    "suspicious_qty_grams": "flag any single quantity above this many grams as a probable unit error"
+  }
+}
