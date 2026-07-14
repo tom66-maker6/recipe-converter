@@ -2,12 +2,12 @@
 extraction.py — turn an uploaded source file into one or more RAW recipes.
 
 Two backends behind one interface:
-  • HeuristicExtractor — local, no API key; good for clean table-based docx/xlsx.
-  • AzureOpenAIExtractor — production; handles messy layouts, OCR text and novel
-    translation. Selected automatically when Azure OpenAI is configured.
-
-Readers return an ORDERED list of blocks so each recipe keeps its own name and
-method:  [{"type":"p","text":...} | {"type":"table","rows":[[...]]}]
+  • HeuristicExtractor — local, no API key. Finds the ingredient table wherever it
+    is in the sheet/doc, maps columns by header name AND by cell values (units vs
+    numbers vs cost columns), and pulls recipe name / category / process from the
+    surrounding cells. Handles real hotel cost-sheet layouts.
+  • AzureOpenAIExtractor — optional; handles very messy layouts, OCR text and
+    free-text translation. Selected automatically when configured.
 
 Output per recipe (RAW — before the deterministic normalization core runs):
   {"recipe_name","category_hint","process","ingredients":[{name,qty,unit}]}
@@ -45,9 +45,8 @@ def read_xlsx(path):
         rows = []
         for row in ws.iter_rows(values_only=True):
             cells = [("" if v is None else str(v).strip()) for v in row]
-            if any(cells):
-                rows.append(cells)
-        if rows:
+            rows.append(cells)
+        if any(any(c for c in r) for r in rows):
             blocks.append({"type": "table", "rows": rows})
     return blocks
 
@@ -81,73 +80,143 @@ def load_source(path: Path):
         raise ExtractionError(f"Unsupported file type: {ext}")
     return READERS[ext](path)
 
-# ------------------------------------------------------- heuristic helpers ----
-_NAME_RE = re.compile(r"(recipe|recette|produit|product|name|nom)\s*[:\-]\s*(.+)", re.I)
+# ------------------------------------------------------- shared helpers ----
+_NAME_RE = re.compile(r"(item|recipe|recette|produit|product|name|nom)\s*[:\-]\s*(.+)", re.I)
+_CAT_RE = re.compile(r"(category|cat[ée]gorie)\s*[:\-]\s*(.+)", re.I)
 _METHOD_HDR = re.compile(r"^(method|méthode|methode|process|procédé|procede|preparation|préparation|steps?)\b", re.I)
-_JUNK = re.compile(r"(cost center|code|rev\b|révision|revision|approv|printed|imprim|page\s*\d|"
-                   r"signature|department|service|outlet|hôtel|hotel|storage|allerg|uncontrolled|property of)", re.I)
-_ING_HDR = ("ingredient", "ingrédient", "component", "composant", "formula", "formule", "item")
-_QTY_HDR = ("qty", "quantity", "quantité", "quantite", "amount", "poids", "weight")
-_UNIT_HDR = ("unit", "unité", "unite", "uom")          # NB: no bare "u" (matched "quantité")
+_METHOD_LABEL = re.compile(r"^(process|method|méthode|methode|procédé|procede|preparation|préparation)\b\s*[:\-]?\s*$", re.I)
+_STOP = re.compile(r"^(comment|allerg|food allerg|picture|nutrition|yield|portion|vegetarian|dairy|nuts?|gluten|sesame|storage|shelf)", re.I)
+_JUNK = re.compile(r"(cost center|cost:|code|rev\b|révision|revision|approv|printed|imprim|page\s*\d|"
+                   r"signature|department|service|outlet|hôtel|hotel|storage|allerg|uncontrolled|property of|atlantis)", re.I)
+
+_NAME_HDR = ("ingredient", "ingredients", "ingrédient", "ingredient", "component", "composant",
+             "item", "items", "produit", "product", "formula", "formule", "recette")
+_QTY_HDR = ("quantit", "qty", "weight", "poids", "amount", "grams", "gramme", "gr ")
+_COST_HDR = ("cost", "price", "prix", "code", "extended", "total", "%")
+_UNIT_TOKENS = {"gr", "g", "gm", "gram", "grams", "gramme", "grammes", "kg", "kilo", "pcs", "pc",
+                "piece", "pieces", "pièce", "ml", "l", "cl", "dl", "pod", "pods", "gousse", "gousses",
+                "unit", "units", "u", "ea", "tsp", "tbsp", "oz", "leaf", "leaves", "feuille", "feuilles",
+                "sheet", "sheets"}
 
 def _num(s):
+    if isinstance(s, (int, float)):
+        return float(s)
     m = re.search(r"-?\d+[.,]?\d*", str(s).replace(",", "."))
     return float(m.group(0)) if m else None
 
-def _split_qty_unit(qty_cell, unit_cell):
-    unit = (unit_cell or "").strip()
-    n = _num(qty_cell)
-    if not unit:                                   # unit glued to the qty ("250 g")
-        m = re.search(r"[a-zA-Zéè%]+", str(qty_cell))
-        unit = m.group(0) if m else ""
-    return n, unit
+def _is_unit(v):
+    return str(v).strip().lower() in _UNIT_TOKENS
 
-def _pick_columns(header):
-    hl = [h.lower() for h in header]
-    def find(cands):
-        for i, h in enumerate(hl):
-            if any(c in h for c in cands):
-                return i
-        return None
-    return find(_ING_HDR), find(_QTY_HDR), find(_UNIT_HDR)
+def _clean(s):
+    return re.sub(r"\s+", " ", str(s)).strip(" :-–").strip()
 
-def _looks_like_ingredient_table(rows):
-    if not rows or len(rows) < 2:
-        return False
-    ci, cq, _ = _pick_columns(rows[0])
-    if ci is not None and cq is not None:
-        return True
-    numeric = sum(1 for r in rows if len(r) > 1 and _num(r[1]) is not None)
-    return numeric >= max(2, len(rows) // 2)
+def _name_header_col(lc):
+    """Index of a real ingredient-column HEADER cell (e.g. 'Ingredients'), not a
+    recipe-name line like 'Item: 3 Chocolates Cookie'."""
+    for j, c in enumerate(lc):
+        if not c:
+            continue
+        base = c.rstrip(":").strip()
+        if base in _NAME_HDR:
+            return j
+        # allow 'Ingredient Name' style: short, first word is a keyword, no digits, no mid-colon
+        if len(c) <= 16 and not any(ch.isdigit() for ch in c) and ":" not in base:
+            if c.split() and c.split()[0] in _NAME_HDR:
+                return j
+    return None
 
-def _table_to_ingredients(rows):
-    if not rows or len(rows) < 2:
+def _find_ingredient_header(rows):
+    """Locate the header row anywhere in a grid and map name/qty/unit columns."""
+    for i, row in enumerate(rows):
+        lc = [str(c).strip().lower() for c in row]
+        name_col = _name_header_col(lc)
+        if name_col is None:
+            continue
+        data = rows[i + 1:i + 14]
+        qty_col, unit_col = _pick_qty_unit(row, data, name_col)
+        if qty_col is not None:
+            return i, name_col, qty_col, unit_col
+    return None
+
+def _pick_qty_unit(header_row, data_rows, name_col):
+    ncols = max([len(header_row)] + [len(r) for r in data_rows] + [0])
+    unit_col, best_unit = None, 0.0
+    numeric = []          # (col, header, has_nonzero)
+    for j in range(ncols):
+        if j == name_col:
+            continue
+        hdr = str(header_row[j]).strip().lower() if j < len(header_row) else ""
+        if any(x in hdr for x in _COST_HDR):
+            continue
+        vals = [r[j] for r in data_rows if j < len(r) and str(r[j]).strip() != ""]
+        if not vals:
+            continue
+        unit_ratio = sum(1 for v in vals if _is_unit(v)) / len(vals)
+        num_ratio = sum(1 for v in vals if _num(v) is not None) / len(vals)
+        if unit_ratio > best_unit and unit_ratio >= 0.5:
+            best_unit, unit_col = unit_ratio, j
+        if num_ratio >= 0.5:
+            nums = [_num(v) for v in vals if _num(v) is not None]
+            numeric.append((j, hdr, any(n not in (0, None) for n in nums)))
+    qty_col = None
+    for j, hdr, _ in numeric:                       # prefer a quantity-named column
+        if j != unit_col and any(x in hdr for x in _QTY_HDR):
+            qty_col = j; break
+    if qty_col is None:                             # else first numeric, non-unit, non-zero column
+        for j, hdr, nonzero in numeric:
+            if j != unit_col and nonzero:
+                qty_col = j; break
+    return qty_col, unit_col
+
+def _ingredients_from_table(rows):
+    hdr = _find_ingredient_header(rows)
+    if hdr is None:
         return []
-    ci, cq, cu = _pick_columns(rows[0])
-    body = rows[1:]
-    if ci is None:
-        ci, cq, cu = 0, 1, (2 if len(rows[0]) > 2 else None)
-        body = rows
-    out = []
-    for row in body:
-        if ci >= len(row):
+    i, name_col, qty_col, unit_col = hdr
+    out, blanks = [], 0
+    for row in rows[i + 1:]:
+        name = str(row[name_col]).strip() if name_col < len(row) and row[name_col] is not None else ""
+        if not name or not re.search(r"[A-Za-zÀ-ÿ]", name):
+            blanks += 1
+            if blanks >= 3 and out:
+                break
             continue
-        name = row[ci].strip()
-        # skip blanks / pure-number rows / totals — but KEEP names that merely
-        # contain a number, e.g. "Dark Chocolate 70%".
-        if not name or not re.search(r"[A-Za-zÀ-ÿ]", name) or \
-           name.lower() in ("total", "totaux", "subtotal", "sub total"):
-            continue
-        qty_cell = row[cq] if (cq is not None and cq < len(row)) else ""
-        unit_cell = row[cu] if (cu is not None and cu < len(row)) else ""
-        qty, unit = _split_qty_unit(qty_cell, unit_cell)
+        if name.lower() in ("total", "totaux", "subtotal", "sub total", "grand total"):
+            break
+        blanks = 0
+        qty = _num(row[qty_col]) if (qty_col is not None and qty_col < len(row)) else None
         if qty is None:
             continue
+        unit = str(row[unit_col]).strip() if (unit_col is not None and unit_col < len(row) and row[unit_col] is not None) else ""
         out.append({"name": name, "qty": qty, "unit": unit})
     return out
 
-def _clean_name(s):
-    return re.sub(r"\s+", " ", s).strip(" :-–").strip()
+def _looks_like_ingredient_table(rows):
+    return _find_ingredient_header(rows) is not None
+
+def _scan_grid_meta(rows):
+    """Pull recipe name / category / process from scattered cells in a grid."""
+    cells = [str(v).strip() for row in rows for v in row if str(v).strip()]
+    name = None
+    for t in cells:
+        m = _NAME_RE.match(t)
+        if m and not _JUNK.search(t):
+            name = _clean(m.group(2)); break
+    cat = ""
+    for t in cells:
+        m = _CAT_RE.match(t)
+        if m:
+            cat = _clean(m.group(2)); break
+    proc, started = [], False
+    for t in cells:
+        if started:
+            if _STOP.search(t):
+                break
+            if len(t) > 12 or proc:
+                proc.append(t)
+        elif _METHOD_LABEL.match(t):
+            started = True
+    return name, cat, " ".join(proc).strip()
 
 # --------------------------------------------------- heuristic extractor -----
 class HeuristicExtractor:
@@ -155,39 +224,57 @@ class HeuristicExtractor:
 
     def extract(self, path: Path):
         blocks = load_source(path)
+        tables = [b["rows"] for b in blocks if b["type"] == "table"]
+        # A spreadsheet is one big grid -> grid mode (find table + scan meta cells).
+        big_grid = path.suffix.lower() in (".xlsx", ".xls")
+        recipes = self._grid(tables, path) if big_grid else self._blocks(blocks, path)
+        if not recipes:
+            # fallback: try the other strategy before giving up
+            recipes = self._blocks(blocks, path) if big_grid else self._grid(tables, path)
+        if not recipes:
+            raise ExtractionError("Could not locate an ingredient table. "
+                                  "Configure the AI extractor for free-form recipes.")
+        ambiguous = False
+        return {"recipes": recipes, "detected": len(recipes),
+                "ambiguous_multi": ambiguous, "engine": self.name, "ocr_uncertainty": 0}
+
+    def _grid(self, tables, path):
+        recipes = []
+        for rows in tables:
+            ings = _ingredients_from_table(rows)
+            if not ings:
+                continue
+            name, cat, proc = _scan_grid_meta(rows)
+            recipes.append({"recipe_name": name or path.stem, "category_hint": cat,
+                            "process": proc, "ingredients": ings})
+        return recipes
+
+    def _blocks(self, blocks, path):
         recipes, pending_name, collecting = [], None, None
-        name_lines = 0
         for blk in blocks:
             if blk["type"] == "p":
                 text = blk["text"]
-                if _METHOD_HDR.match(text):                       # method heading
+                if _METHOD_HDR.match(text):
                     collecting = recipes[-1] if recipes else None
-                    remainder = _clean_name(re.sub(_METHOD_HDR, "", text, count=1))
+                    remainder = _clean(re.sub(_METHOD_HDR, "", text, count=1))
                     if collecting and remainder:
                         collecting["process"] = (collecting["process"] + " " + remainder).strip()
                     continue
                 m = _NAME_RE.search(text)
-                if m and not _JUNK.search(text):                  # explicit "Product:" line
-                    pending_name = _clean_name(m.group(2)); collecting = None; name_lines += 1; continue
-                if collecting is not None and not _JUNK.search(text):
+                if m and not _JUNK.search(text):
+                    pending_name = _clean(m.group(2)); collecting = None; continue
+                if collecting is not None and not _JUNK.search(text) and not _STOP.search(text):
                     collecting["process"] = (collecting["process"] + " " + text).strip(); continue
                 if pending_name is None and 3 <= len(text) <= 60 and ":" not in text and not _JUNK.search(text):
-                    pending_name = _clean_name(text)              # weak fallback title
-            elif blk["type"] == "table" and _looks_like_ingredient_table(blk["rows"]):
-                ings = _table_to_ingredients(blk["rows"])
+                    pending_name = _clean(text)
+            elif blk["type"] == "table":
+                ings = _ingredients_from_table(blk["rows"])
                 if not ings:
                     continue
                 recipes.append({"recipe_name": pending_name or path.stem,
                                 "category_hint": "", "process": "", "ingredients": ings})
                 pending_name, collecting = None, None
-
-        if not recipes:
-            raise ExtractionError("Could not locate an ingredient table. "
-                                  "Configure the AI extractor for free-form recipes.")
-        # ambiguous: several product headings but only one table -> ask the user
-        ambiguous = len(recipes) == 1 and name_lines > 1
-        return {"recipes": recipes, "detected": len(recipes),
-                "ambiguous_multi": ambiguous, "engine": self.name, "ocr_uncertainty": 0}
+        return recipes
 
 # --------------------------------------------------- Azure OpenAI extractor ---
 _SYSTEM = """You extract pastry recipes from arbitrary documents into strict JSON.
@@ -233,5 +320,61 @@ class AzureOpenAIExtractor:
         r.raise_for_status()
         return json.loads(r.json()["choices"][0]["message"]["content"])
 
+# --------------------------------------------------- Google Gemini extractor --
+# FREE tier. Reads photos/scans/PDFs directly (vision) and any Excel/Word layout,
+# and translates everything to English. Returns the SAME JSON shape as the others;
+# the deterministic core still does kg→g / eggs / Gelatine Mass / template fill.
+_IMG_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".heic": "image/heic"}
+
+class GeminiExtractor:
+    name = "gemini"
+
+    def extract(self, path: Path):
+        ext = path.suffix.lower()
+        if ext in IMAGE_EXT:
+            return self._vision(path, _IMG_MIME.get(ext, "image/jpeg"))
+        if ext == ".pdf":
+            return self._vision(path, "application/pdf")        # Gemini reads PDFs (incl. scans)
+        blocks = load_source(path)                              # docx / xlsx -> text
+        text = "\n".join(b["text"] if b["type"] == "p" else "\n".join(" | ".join(r) for r in b["rows"])
+                         for b in blocks)[:120_000]
+        return self._generate([{"text": _SYSTEM + "\n" + _SCHEMA_HINT + "\n\nDOCUMENT:\n" + text}])
+
+    def _vision(self, path: Path, mime: str):
+        import base64
+        b64 = base64.b64encode(path.read_bytes()).decode()
+        return self._generate([{"text": _SYSTEM + "\n" + _SCHEMA_HINT},
+                               {"inline_data": {"mime_type": mime, "data": b64}}])
+
+    def _generate(self, parts):
+        import requests
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{settings.GEMINI_MODEL}:generateContent?key={settings.GEMINI_API_KEY}")
+        body = {"contents": [{"parts": parts}],
+                "generationConfig": {"response_mime_type": "application/json", "temperature": 0}}
+        try:
+            r = requests.post(url, json=body, timeout=120)
+        except Exception as e:
+            raise ExtractionError(f"AI service unreachable: {e}")
+        if r.status_code == 429:
+            raise ExtractionError("Free AI quota reached for the moment — please try again in a minute.")
+        if r.status_code in (400, 403) and ("API key" in r.text or "API_KEY" in r.text):
+            raise ExtractionError("The Gemini API key is missing or invalid (check GEMINI_API_KEY on Render).")
+        r.raise_for_status()
+        try:
+            txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            payload = json.loads(txt)
+        except Exception as e:
+            raise ExtractionError(f"AI returned an unexpected response: {e}")
+        payload.setdefault("ocr_uncertainty", 0)
+        payload["engine"] = self.name
+        payload["detected"] = len(payload.get("recipes", []))
+        payload.setdefault("ambiguous_multi", False)
+        return payload
+
 def get_extractor():
-    return AzureOpenAIExtractor() if settings.llm_enabled() else HeuristicExtractor()
+    if settings.gemini_enabled():
+        return GeminiExtractor()          # FREE Gemini: photos, any layout, translation
+    if settings.llm_enabled():
+        return AzureOpenAIExtractor()
+    return HeuristicExtractor()           # free, files-only, no free-text translation

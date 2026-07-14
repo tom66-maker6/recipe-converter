@@ -44,6 +44,14 @@ AZURE_OCR_KEY = os.getenv("AZURE_OCR_KEY", "")                  # secret → Key
 def llm_enabled() -> bool:
     return bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_KEY)
 
+# --- Google Gemini (FREE tier) — reads photos/scans, any Excel layout, translates.
+# Get a free key at https://aistudio.google.com  →  set GEMINI_API_KEY on Render.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+def gemini_enabled() -> bool:
+    return bool(GEMINI_API_KEY)
+
 # --- auth / roles (self-managed — NO corporate directory / Entra required) ---
 # AUTH_MODE: 'code' = one shared access code (default) | 'users' = per-user accounts
 #            | 'dev' = open, local testing only.
