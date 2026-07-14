@@ -8,12 +8,12 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
-    <span class="logo">Wynn</span>
-    <span class="app-name">Recipe Converter</span>
-  </div>
   <div class="user" id="userBox"><span class="muted">signing in…</span></div>
 </header>
+
+<div class="hero">
+  <img src="/logo.png" class="hero-logo" alt="Recipe Converter" />
+</div>
 
 <main>
   <!-- Upload -->
@@ -28,6 +28,19 @@
     </div>
   </section>
 
+  <!-- Optional AI instructions (collapsible) -->
+  <section class="instr">
+    <button type="button" class="instr-toggle" id="instrToggle" aria-expanded="false">
+      <span class="chev" id="instrChev">▸</span> Optional instructions
+    </button>
+    <div class="instr-body" id="instrBody" hidden>
+      <textarea id="aiInstructions" rows="4"
+        placeholder="e.g.&#10;• Replace dark chocolate with Valrhona 70%.&#10;• Rescale the whole recipe to a total of 2 kg.&#10;• Replace the butter with lamination butter.&#10;• Rename ingredient X as ingredient Y."></textarea>
+      <p class="muted">Leave empty for a normal free conversion (no AI, no quota used). If you write an
+        instruction, the free Google Gemini AI is used for that upload.</p>
+    </div>
+  </section>
+
   <div class="batch-actions" id="batchActions" hidden>
     <span id="batchSummary" class="muted"></span>
     <button class="btn ghost" id="downloadAllBtn">⬇ Download all</button>
@@ -35,24 +48,6 @@
 
   <!-- File / recipe results -->
   <section id="results"></section>
-
-  <!-- Ingredient DB governance -->
-  <section class="panel" id="govPanel" hidden>
-    <div class="panel-head" data-toggle="govBody">
-      <h3>Shared ingredient database</h3><span class="chev">▾</span>
-    </div>
-    <div class="panel-body" id="govBody" hidden>
-      <p class="muted">Propose a standard name. An administrator approves it globally,
-        after which it is reused for everyone and stays reversible.</p>
-      <div class="row">
-        <input id="propRaw" placeholder="Original name (e.g. Dark couverture)" />
-        <span>→</span>
-        <input id="propCanon" placeholder="Standard name (e.g. Dark Chocolate 70%)" />
-        <button class="btn" id="proposeBtn">Propose</button>
-      </div>
-      <div id="pendingBox" class="admin-only" hidden></div>
-    </div>
-  </section>
 </main>
 
 <div id="toast" class="toast" hidden></div>

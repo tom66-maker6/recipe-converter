@@ -16,9 +16,6 @@ let ME = {is_admin:false}, CURRENT_BATCH = null, POLL = null;
       `${ME.name}${ME.is_admin?'<span class="badge-admin">Admin</span>':''}` +
       `<button class="btn small ghost" id="logoutBtn" style="margin-left:12px">Sign out</button>`;
     $("#logoutBtn").onclick = async ()=>{ await fetch("/api/logout",{method:"POST"}); window.location="/login"; };
-    document.body.classList.toggle("is-admin", ME.is_admin);
-    $("#govPanel").hidden = false;
-    if(ME.is_admin) loadPending();
   }catch(e){ window.location = "/login"; }   // not signed in → go to the login page
 })();
 
@@ -34,6 +31,8 @@ input.addEventListener("change", ()=> handleFiles(input.files));
 async function handleFiles(fileList){
   const files=[...fileList]; if(!files.length) return;
   const fd = new FormData(); files.forEach(f=>fd.append("files", f));
+  const instr = ($("#aiInstructions")?.value || "").trim();
+  if(instr) fd.append("instructions", instr);
   toast(`Uploading ${files.length} file(s)…`);
   try{
     const r = await fetch("/api/upload", {method:"POST", body:fd});
@@ -154,32 +153,15 @@ $("#downloadAllBtn").onclick = ()=>{
   if(CURRENT_BATCH) window.location = `/api/batch/${CURRENT_BATCH}/download-all`;
 };
 
-// ---------- ingredient DB governance ----------
-document.querySelectorAll("[data-toggle]").forEach(h=> h.onclick=()=>{
-  const body=$("#"+h.dataset.toggle); body.hidden=!body.hidden;
-});
-$("#proposeBtn").onclick = async ()=>{
-  const raw=$("#propRaw").value.trim(), canon=$("#propCanon").value.trim();
-  if(!raw||!canon){ toast("Enter both names."); return; }
-  try{ await api("/api/ingredients/propose",{method:"POST",body:JSON.stringify({raw_name:raw,canonical:canon})});
-    $("#propRaw").value=""; $("#propCanon").value="";
-    toast(ME.is_admin?"Proposed — approve it below.":"Proposed — an admin will review it.");
-    if(ME.is_admin) loadPending();
-  }catch(e){ toast("Failed: "+e.message); }
-};
-async function loadPending(){
-  const box=$("#pendingBox"); box.hidden=false;
-  try{
-    const p = await api("/api/ingredients/pending");
-    box.innerHTML = "<h4>Pending approvals</h4>" + (p.length? p.map(x=>
-      `<div class="pending-item"><span>${esc(x.raw_name)} → <b>${esc(x.canonical)}</b>
-       <span class="muted">by ${esc(x.proposed_by)}</span></span>
-       <button class="btn small" data-id="${x.id}">Approve globally</button></div>`).join("")
-      : '<p class="muted">No pending proposals.</p>');
-    box.querySelectorAll("button[data-id]").forEach(b=> b.onclick=async ()=>{
-      await api("/api/ingredients/approve",{method:"POST",body:JSON.stringify({id:b.dataset.id})});
-      toast("Approved globally."); loadPending();
-    });
-  }catch(e){/* not admin */}
+// ---------- optional instructions (collapsible) ----------
+const instrToggle = $("#instrToggle");
+if(instrToggle){
+  instrToggle.onclick = ()=>{
+    const body = $("#instrBody"), willOpen = body.hidden;
+    body.hidden = !willOpen;
+    $("#instrChev").textContent = willOpen ? "▾" : "▸";
+    instrToggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  };
 }
+
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
