@@ -1,7 +1,0 @@
-# The web server uses only the Python standard library — no framework to install.
-# These are just the document + AI libraries:
-openpyxl==3.1.5
-python-docx==1.1.2
-pdfplumber==0.11.4
-requests==2.32.3
-# Optional production OCR (scans/photos): azure-ai-documentintelligence
