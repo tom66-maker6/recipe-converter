@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign in — Recipe Converter</title>
+<link rel="stylesheet" href="/styles.css" />
+<style>
+  body{display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+  .login-card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:34px 30px;width:340px;box-shadow:0 10px 40px rgba(0,0,0,.06)}
+  .login-card .logo{font-family:Georgia,serif;font-size:1.8rem;font-style:italic;color:var(--accent-dark);display:block;text-align:center}
+  .login-card h1{font-size:1.05rem;text-align:center;margin:.2em 0 1.2em;font-weight:600}
+  .login-card label{font-size:.82rem;color:var(--muted);display:block;margin:12px 0 4px}
+  .login-card input{width:100%;border:1px solid var(--line);border-radius:9px;padding:11px 12px;font-size:.95rem}
+  .login-card .btn{width:100%;margin-top:20px;padding:12px}
+  .err{color:var(--bad);font-size:.85rem;margin-top:12px;text-align:center;min-height:1em}
+</style>
+</head>
+<body>
+<form class="login-card" id="loginForm">
+  <span class="logo">Wynn</span>
+  <h1>Recipe Converter</h1>
+  <div id="nameRow">
+    <label for="u" id="lblU">Email</label>
+    <input id="u" type="text" autocomplete="username" />
+  </div>
+  <label for="p" id="lblP">Password</label>
+  <input id="p" type="password" autocomplete="current-password" autofocus />
+  <button class="btn" type="submit">Enter</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+// In shared-code mode there is just ONE field: the access code.
+let MODE = "users";
+fetch("/api/config").then(r=>r.json()).then(c=>{
+  MODE = c.auth_mode;
+  if(MODE === "code"){
+    document.getElementById("nameRow").style.display = "none";   // no name needed
+    document.getElementById("lblP").textContent = "Access code";
+    document.getElementById("p").focus();
+  }
+}).catch(()=>{});
+document.getElementById("loginForm").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  const err = document.getElementById("err"); err.textContent = "";
+  const username = MODE === "code" ? "guest" : document.getElementById("u").value;
+  try{
+    const r = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username, password: document.getElementById("p").value})});
+    if(!r.ok){ err.textContent = (await r.json()).detail || "Sign-in failed."; return; }
+    window.location = "/";
+  }catch(_){ err.textContent = "Could not reach the server."; }
+});
+</script>
+</body>
+</html>

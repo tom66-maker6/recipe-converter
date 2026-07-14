@@ -1,0 +1,23 @@
+# One-click deploy on Render (FREE tier).
+#   New → Blueprint → connect your repo → Render reads this file.
+# Then set SHARED_ACCESS_CODE (your access code) as a secret in the dashboard.
+services:
+  - type: web
+    name: recipe-converter
+    runtime: docker
+    dockerfilePath: ./infra/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /login
+    autoDeploy: true
+    envVars:
+      - key: AUTH_MODE
+        value: code
+      - key: SHARED_ACCESS_CODE
+        sync: false          # <-- you enter this in the Render dashboard as a secret
+      - key: SESSION_SECRET
+        generateValue: true  # Render generates a strong random value
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DATA_DIR
+        value: /tmp/data

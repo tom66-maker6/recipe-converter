@@ -1,0 +1,43 @@
+{
+  "aliases": {
+    "sugar": "Caster Sugar",
+    "sucre": "Caster Sugar",
+    "granulated sugar": "Caster Sugar",
+    "white sugar": "Caster Sugar",
+    "caster sugar": "Caster Sugar",
+    "creme liquide": "Heavy Cream",
+    "creme fleurette": "Heavy Cream",
+    "beurre noisette": "Brown Butter",
+    "poudre d'amande": "Almond Powder",
+    "amande en poudre": "Almond Powder",
+    "beurre": "Butter",
+    "farine": "Flour",
+    "corn strach": "Corn Starch",
+    "corn starch": "Corn Starch",
+    "fecule de mais": "Corn Starch",
+    "maizena": "Corn Starch",
+    "cassonade": "Cassonade",
+    "brown sugar": "Brown Sugar",
+    "demerara sugar": "Demerara Sugar",
+    "demerara": "Demerara Sugar",
+    "dark couverture": "Dark Chocolate 70%"
+  },
+  "known_canonicals": [
+    "Almond Powder",
+    "Brown Butter",
+    "Brown Sugar",
+    "Butter",
+    "Cassonade",
+    "Caster Sugar",
+    "Corn Starch",
+    "Dark Chocolate 70%",
+    "Demerara Sugar",
+    "Flour",
+    "Gelatine Mass",
+    "Heavy Cream",
+    "Pasteurized Egg Whites",
+    "Pasteurized Egg Yolks",
+    "Pasteurized Whole Egg",
+    "Whole Milk"
+  ]
+}
