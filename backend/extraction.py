@@ -334,6 +334,8 @@ class AzureOpenAIExtractor:
 # and translates everything to English. Returns the SAME JSON shape as the others;
 # the deterministic core still does kg→g / eggs / Gelatine Mass / template fill.
 _IMG_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".heic": "image/heic"}
+_RESOLVED_MODEL = [None]   # cache: the Gemini model that last worked for this account
+_LISTED_MODELS = [None]    # cache: flash models this account can actually use
 
 class GeminiExtractor:
     name = "gemini"
@@ -356,38 +358,94 @@ class GeminiExtractor:
         return self._generate([{"text": prompt},
                                {"inline_data": {"mime_type": mime, "data": b64}}])
 
-    def _generate(self, parts):
+    def _candidates(self):
+        """Models to try, best first: last-known-good, the env override, the models
+        the account actually lists, then sensible fallbacks."""
+        seen, out = set(), []
+        def add(m):
+            m = (m or "").strip()
+            if m and m not in seen:
+                seen.add(m); out.append(m)
+        add(_RESOLVED_MODEL[0])
+        add(settings.GEMINI_MODEL)
+        for m in self._list_models():
+            add(m)
+        for m in ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash",
+                  "gemini-2.0-flash-lite", "gemini-2.5-flash-lite"):
+            add(m)
+        return out
+
+    def _list_models(self):
+        """Ask Google which flash models THIS account may call (cached)."""
+        if _LISTED_MODELS[0] is not None:
+            return _LISTED_MODELS[0]
         import requests
-        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-               f"{settings.GEMINI_MODEL}:generateContent?key={settings.GEMINI_API_KEY}")
+        names = []
+        try:
+            r = requests.get("https://generativelanguage.googleapis.com/v1beta/models"
+                             f"?key={settings.GEMINI_API_KEY}&pageSize=200", timeout=30)
+            if r.status_code == 200:
+                for m in r.json().get("models", []):
+                    if "generateContent" in m.get("supportedGenerationMethods", []):
+                        n = m.get("name", "").replace("models/", "")
+                        if "flash" in n.lower() and "vision" not in n.lower():
+                            names.append(n)
+                names.sort(key=lambda n: ("lite" in n, "preview" in n or "exp" in n, n))
+        except Exception:
+            names = []
+        _LISTED_MODELS[0] = names
+        return names
+
+    def _generate(self, parts):
+        import requests, time
         body = {"contents": [{"parts": parts}],
                 "generationConfig": {"response_mime_type": "application/json", "temperature": 0}}
-        try:
-            r = requests.post(url, json=body, timeout=120)
-        except Exception as e:
-            raise ExtractionError(f"AI service unreachable: {e}")
-        if r.status_code >= 400:
+        last = ""
+        for model in self._candidates():
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{model}:generateContent?key={settings.GEMINI_API_KEY}")
+            r = None
+            for attempt in range(3):                       # auto-retry transient overloads
+                try:
+                    r = requests.post(url, json=body, timeout=120)
+                except Exception as e:
+                    raise ExtractionError(f"AI service unreachable: {e}")
+                if r.status_code not in (500, 502, 503, 504):
+                    break
+                time.sleep(2 * (attempt + 1))
+            if r.status_code == 200:
+                _RESOLVED_MODEL[0] = model     # remember what worked
+                try:
+                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    payload = json.loads(txt)
+                except Exception as e:
+                    raise ExtractionError(f"AI returned an unexpected response: {e}")
+                payload.setdefault("ocr_uncertainty", 0)
+                payload["engine"] = self.name
+                payload["detected"] = len(payload.get("recipes", []))
+                payload.setdefault("ambiguous_multi", False)
+                return payload
             detail = ""
             try:
                 detail = r.json().get("error", {}).get("message", "")
             except Exception:
                 detail = (r.text or "")[:300]
+            last = detail
+            # model missing (404) or zero free quota -> try the next candidate
+            if r.status_code == 404 or (r.status_code == 429 and "limit: 0" in detail):
+                if _RESOLVED_MODEL[0] == model:
+                    _RESOLVED_MODEL[0] = None
+                continue
+            if r.status_code in (500, 502, 503, 504):
+                raise ExtractionError("The AI is temporarily busy (high demand). Please try again in a moment.")
             if r.status_code == 429:
-                raise ExtractionError(f"Gemini free limit. Google says: {detail or 'quota exceeded'} "
-                                      "— wait a minute, or try GEMINI_MODEL=gemini-1.5-flash on Render.")
+                raise ExtractionError(f"Gemini rate limit reached — wait a minute. {detail}")
             if r.status_code in (400, 403):
                 raise ExtractionError(f"Gemini key/permission problem: {detail}")
             raise ExtractionError(f"Gemini error {r.status_code}: {detail}")
-        try:
-            txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            payload = json.loads(txt)
-        except Exception as e:
-            raise ExtractionError(f"AI returned an unexpected response: {e}")
-        payload.setdefault("ocr_uncertainty", 0)
-        payload["engine"] = self.name
-        payload["detected"] = len(payload.get("recipes", []))
-        payload.setdefault("ambiguous_multi", False)
-        return payload
+        raise ExtractionError("No free Gemini model is available for this account/region "
+                              f"(last: {last}). Enable pay-as-you-go billing in Google AI Studio, "
+                              "or keep using the free local reader for Excel/Word/PDF.")
 
 class HybridExtractor:
     """Best of both, and quota-friendly:
