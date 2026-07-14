@@ -16,9 +16,9 @@ class JobStore:
         self.batches = {}          # batch_id -> {user_email, files:{file_id:{...}}}
         self.generated = {}        # token -> {path, recipe_name, batch_id}
 
-    def new_batch(self, user):
+    def new_batch(self, user, instructions=""):
         bid = uuid.uuid4().hex[:12]
-        self.batches[bid] = {"user_email": user.email, "files": {}}
+        self.batches[bid] = {"user_email": user.email, "files": {}, "instructions": instructions}
         return bid
 
     def add_file(self, bid, filename, path):
@@ -56,7 +56,8 @@ def _worker():
             f["status"] = "processing"
             try:
                 db = store.load_db()          # pick up newly approved global mappings
-                result = _process_one(extractor, db, Path(f["path"]))
+                instr = JOBS.batches[bid].get("instructions", "")
+                result = _process_one(extractor, db, Path(f["path"]), instr)
                 f.update(engine=result["engine"], detected=result["detected"],
                          ambiguous_multi=result["ambiguous_multi"], recipes=result["recipes"])
                 if result["ambiguous_multi"]:
@@ -81,8 +82,8 @@ def _worker():
 def start_worker():
     threading.Thread(target=_worker, daemon=True).start()
 
-def _process_one(extractor, db, path: Path):
-    payload = extractor.extract(path)
+def _process_one(extractor, db, path: Path, instructions=""):
+    payload = extractor.extract(path, instructions)
     recipes = []
     for raw in payload.get("recipes", []):
         prev = build_preview(raw, db, payload.get("ocr_uncertainty", 0))

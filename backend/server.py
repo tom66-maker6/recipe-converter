@@ -20,7 +20,7 @@ from auth import resolve_user, COOKIE
 
 ALLOWED_EXT = {".xlsx", ".xls", ".pdf", ".docx", ".jpg", ".jpeg", ".png", ".heic"}
 STATIC = {"/styles.css": "text/css", "/app.js": "application/javascript",
-          "/login.html": "text/html; charset=utf-8"}
+          "/login.html": "text/html; charset=utf-8", "/logo.png": "image/png"}
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 def _cleanup_generated():
@@ -87,21 +87,27 @@ class Handler(BaseHTTPRequestHandler):
     def _user(self):
         return resolve_user(self._cookies())
 
-    def _multipart_files(self):
+    def _multipart(self):
+        """Return (files, fields) from a multipart/form-data body."""
         ctype = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in ctype or "boundary=" not in ctype:
-            return []
+            return [], {}
         boundary = ctype.split("boundary=", 1)[1].strip().strip('"').encode()
         body = self._body()
-        files = []
+        files, fields = [], {}
         for part in body.split(b"--" + boundary):
-            if b"Content-Disposition" not in part or b'filename="' not in part:
+            if b"Content-Disposition" not in part:
                 continue
             head, _, content = part.partition(b"\r\n\r\n")
-            fname = head.split(b'filename="', 1)[1].split(b'"', 1)[0].decode("utf-8", "ignore")
-            if fname:
-                files.append((fname, content.rstrip(b"\r\n")))
-        return files
+            content = content.rstrip(b"\r\n")
+            if b'filename="' in head:
+                fname = head.split(b'filename="', 1)[1].split(b'"', 1)[0].decode("utf-8", "ignore")
+                if fname:
+                    files.append((fname, content))
+            elif b'name="' in head:
+                fname = head.split(b'name="', 1)[1].split(b'"', 1)[0].decode("utf-8", "ignore")
+                fields[fname] = content.decode("utf-8", "ignore")
+        return files, fields
 
     # ---------- routing ----------
     def do_GET(self):
@@ -182,11 +188,12 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "name": user.name, "is_admin": user.is_admin}, extra=[("Set-Cookie", flags)])
 
     def _upload(self):
-        files = self._multipart_files()
+        files, fields = self._multipart()
+        instructions = (fields.get("instructions") or "").strip()[:2000]
         if len(files) > settings.MAX_BATCH_FILES:
             return self._err(400, f"Too many files (max {settings.MAX_BATCH_FILES}).")
         u = self._user()
-        bid = jobs.JOBS.new_batch(u)
+        bid = jobs.JOBS.new_batch(u, instructions)
         accepted = []
         for fname, data in files:
             if Path(fname).suffix.lower() not in ALLOWED_EXT:

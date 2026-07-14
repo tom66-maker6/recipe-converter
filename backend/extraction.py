@@ -222,7 +222,7 @@ def _scan_grid_meta(rows):
 class HeuristicExtractor:
     name = "local-heuristic"
 
-    def extract(self, path: Path):
+    def extract(self, path: Path, instructions: str = ""):   # instructions ignored (no AI)
         blocks = load_source(path)
         tables = [b["rows"] for b in blocks if b["type"] == "table"]
         # A spreadsheet is one big grid -> grid mode (find table + scan meta cells).
@@ -288,10 +288,19 @@ kg→g, eggs→g and Gelatine Mass; do not do those conversions yourself)."""
 _SCHEMA_HINT = ('Return {"recipes":[{"recipe_name","category_hint","process",'
                 '"ingredients":[{"name","qty","unit"}]}],"ambiguous_multi":bool}')
 
+def _with_instructions(base, instructions):
+    """Append the user's free-text instructions to the AI prompt (opt-in)."""
+    if instructions and instructions.strip():
+        return base + ("\n\nUSER INSTRUCTIONS — apply these to the recipe BEFORE returning the "
+                       "JSON (e.g. substitute or rename ingredients, rescale all quantities to a "
+                       "target total mass, adjust as asked). Apply them faithfully and keep the "
+                       "same JSON shape:\n" + instructions.strip()[:2000])
+    return base
+
 class AzureOpenAIExtractor:
     name = "azure-openai"
 
-    def extract(self, path: Path):
+    def extract(self, path: Path, instructions: str = ""):
         try:
             blocks = load_source(path)
         except NeedsOCR:
@@ -299,7 +308,7 @@ class AzureOpenAIExtractor:
         doc_text = "\n".join(
             b["text"] if b["type"] == "p" else "\n".join(" | ".join(r) for r in b["rows"])
             for b in blocks)[:120_000]
-        payload = self._call(doc_text)
+        payload = self._call(doc_text, instructions)
         payload.setdefault("ocr_uncertainty", 0)
         payload["engine"] = self.name
         payload["detected"] = len(payload.get("recipes", []))
@@ -309,11 +318,11 @@ class AzureOpenAIExtractor:
     def _ocr(self, path):
         raise NeedsOCR("OCR path requires AZURE_OCR_ENDPOINT/KEY (Document Intelligence)")
 
-    def _call(self, doc_text):
+    def _call(self, doc_text, instructions=""):
         import requests
         url = (f"{settings.AZURE_OPENAI_ENDPOINT}/openai/deployments/"
                f"{settings.AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version=2024-06-01")
-        body = {"messages": [{"role": "system", "content": _SYSTEM + "\n" + _SCHEMA_HINT},
+        body = {"messages": [{"role": "system", "content": _with_instructions(_SYSTEM + "\n" + _SCHEMA_HINT, instructions)},
                              {"role": "user", "content": doc_text}],
                 "temperature": 0, "response_format": {"type": "json_object"}}
         r = requests.post(url, headers={"api-key": settings.AZURE_OPENAI_KEY}, json=body, timeout=90)
@@ -329,21 +338,22 @@ _IMG_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", "
 class GeminiExtractor:
     name = "gemini"
 
-    def extract(self, path: Path):
+    def extract(self, path: Path, instructions: str = ""):
+        prompt = _with_instructions(_SYSTEM + "\n" + _SCHEMA_HINT, instructions)
         ext = path.suffix.lower()
         if ext in IMAGE_EXT:
-            return self._vision(path, _IMG_MIME.get(ext, "image/jpeg"))
+            return self._vision(path, _IMG_MIME.get(ext, "image/jpeg"), prompt)
         if ext == ".pdf":
-            return self._vision(path, "application/pdf")        # Gemini reads PDFs (incl. scans)
-        blocks = load_source(path)                              # docx / xlsx -> text
+            return self._vision(path, "application/pdf", prompt)   # Gemini reads PDFs (incl. scans)
+        blocks = load_source(path)                                 # docx / xlsx -> text
         text = "\n".join(b["text"] if b["type"] == "p" else "\n".join(" | ".join(r) for r in b["rows"])
                          for b in blocks)[:120_000]
-        return self._generate([{"text": _SYSTEM + "\n" + _SCHEMA_HINT + "\n\nDOCUMENT:\n" + text}])
+        return self._generate([{"text": prompt + "\n\nDOCUMENT:\n" + text}])
 
-    def _vision(self, path: Path, mime: str):
+    def _vision(self, path: Path, mime: str, prompt: str):
         import base64
         b64 = base64.b64encode(path.read_bytes()).decode()
-        return self._generate([{"text": _SYSTEM + "\n" + _SCHEMA_HINT},
+        return self._generate([{"text": prompt},
                                {"inline_data": {"mime_type": mime, "data": b64}}])
 
     def _generate(self, parts):
@@ -356,11 +366,18 @@ class GeminiExtractor:
             r = requests.post(url, json=body, timeout=120)
         except Exception as e:
             raise ExtractionError(f"AI service unreachable: {e}")
-        if r.status_code == 429:
-            raise ExtractionError("Free AI quota reached for the moment — please try again in a minute.")
-        if r.status_code in (400, 403) and ("API key" in r.text or "API_KEY" in r.text):
-            raise ExtractionError("The Gemini API key is missing or invalid (check GEMINI_API_KEY on Render).")
-        r.raise_for_status()
+        if r.status_code >= 400:
+            detail = ""
+            try:
+                detail = r.json().get("error", {}).get("message", "")
+            except Exception:
+                detail = (r.text or "")[:300]
+            if r.status_code == 429:
+                raise ExtractionError(f"Gemini free limit. Google says: {detail or 'quota exceeded'} "
+                                      "— wait a minute, or try GEMINI_MODEL=gemini-1.5-flash on Render.")
+            if r.status_code in (400, 403):
+                raise ExtractionError(f"Gemini key/permission problem: {detail}")
+            raise ExtractionError(f"Gemini error {r.status_code}: {detail}")
         try:
             txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
             payload = json.loads(txt)
@@ -384,14 +401,16 @@ class HybridExtractor:
         self.local = HeuristicExtractor()
         self.ai = GeminiExtractor()
 
-    def extract(self, path: Path):
+    def extract(self, path: Path, instructions: str = ""):
         ext = path.suffix.lower()
         if ext in IMAGE_EXT:
-            return self.ai.extract(path)                 # images need vision AI
+            return self.ai.extract(path, instructions)          # images need vision AI
+        if instructions and instructions.strip():
+            return self.ai.extract(path, instructions)          # instructions -> AI applies them
         try:
-            return self.local.extract(path)              # documents: free + instant
+            return self.local.extract(path)                     # documents: free + instant
         except (ExtractionError, NeedsOCR):
-            return self.ai.extract(path)                 # messy/scanned -> AI fallback
+            return self.ai.extract(path, instructions)          # messy/scanned -> AI fallback
 
 def get_extractor():
     if settings.gemini_enabled():
