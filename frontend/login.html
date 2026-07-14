@@ -9,7 +9,8 @@
   body{display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
   .login-card{background:var(--card);border:1px solid var(--line);border-radius:16px;
     padding:34px 30px;width:340px;box-shadow:0 10px 40px rgba(0,0,0,.06)}
-  .login-logo{display:block;width:210px;max-width:85%;margin:0 auto 22px;border-radius:14px}
+  .login-card .logo{font-family:Georgia,serif;font-size:1.8rem;font-style:italic;color:var(--accent-dark);display:block;text-align:center}
+  .login-card h1{font-size:1.05rem;text-align:center;margin:.2em 0 1.2em;font-weight:600}
   .login-card label{font-size:.82rem;color:var(--muted);display:block;margin:12px 0 4px}
   .login-card input{width:100%;border:1px solid var(--line);border-radius:9px;padding:11px 12px;font-size:.95rem}
   .login-card .btn{width:100%;margin-top:20px;padding:12px}
@@ -18,7 +19,8 @@
 </head>
 <body>
 <form class="login-card" id="loginForm">
-  <img src="/logo.png" class="login-logo" alt="Recipe Converter" />
+  <span class="logo">Wynn</span>
+  <h1>Recipe Converter</h1>
   <div id="nameRow">
     <label for="u" id="lblU">Email</label>
     <input id="u" type="text" autocomplete="username" />
