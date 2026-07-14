@@ -372,9 +372,30 @@ class GeminiExtractor:
         payload.setdefault("ambiguous_multi", False)
         return payload
 
+class HybridExtractor:
+    """Best of both, and quota-friendly:
+      • Excel / Word / text-PDF  -> free built-in reader (instant, no AI quota used)
+      • Photos / scans           -> Gemini (only the AI can read images)
+      • A document the reader can't parse -> falls back to Gemini
+    This keeps the limited free Gemini quota for the files that truly need it."""
+    name = "hybrid"
+
+    def __init__(self):
+        self.local = HeuristicExtractor()
+        self.ai = GeminiExtractor()
+
+    def extract(self, path: Path):
+        ext = path.suffix.lower()
+        if ext in IMAGE_EXT:
+            return self.ai.extract(path)                 # images need vision AI
+        try:
+            return self.local.extract(path)              # documents: free + instant
+        except (ExtractionError, NeedsOCR):
+            return self.ai.extract(path)                 # messy/scanned -> AI fallback
+
 def get_extractor():
     if settings.gemini_enabled():
-        return GeminiExtractor()          # FREE Gemini: photos, any layout, translation
+        return HybridExtractor()          # free local reader + Gemini for photos/messy files
     if settings.llm_enabled():
         return AzureOpenAIExtractor()
     return HeuristicExtractor()           # free, files-only, no free-text translation
