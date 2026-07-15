@@ -104,6 +104,7 @@ function recipeHtml(f,r,idx){
       <input class="name" value="${esc(r.recipe_name)}"/>
       <select class="cat">${cats}</select>
       <span class="conf ${confClass(r.confidence)}">Confidence ${r.confidence}%</span>
+      ${r.ai_reviewed ? '<span class="conf hi" title="Checked by AI">✓ AI</span>' : ''}
     </div>
     <div class="flags">${flags||'<div class="flag conv">No issues detected.</div>'}</div>
     <table class="ing"><thead><tr><th>#</th><th>Ingredient</th><th>Unit</th><th>Qty</th></tr></thead>

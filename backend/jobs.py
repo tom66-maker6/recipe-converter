@@ -91,6 +91,36 @@ def _process_one(extractor, db, path: Path, instructions=""):
         prev["source_name"] = path.name
         prev["generated"] = None
         recipes.append(prev)
+    # AI validation pass on EVERY recipe (categorize, translate, flag errors/
+    # duplicates). Resilient: if the AI is busy, the code result still stands.
+    if settings.gemini_enabled() and settings.AI_REVIEW_ENABLED:
+        from extraction import review_recipe
+        for prev in recipes:
+            try:
+                _apply_review(prev, review_recipe(prev, prev.get("categories", [])))
+            except Exception:
+                prev.setdefault("warnings", []).append(
+                    "AI validation could not run right now (service busy) — please review manually.")
+                prev["needs_review"] = True
     return {"recipes": recipes, "detected": payload.get("detected", len(recipes)),
             "ambiguous_multi": payload.get("ambiguous_multi", False),
             "engine": payload.get("engine", "unknown")}
+
+def _apply_review(prev, rev):
+    """Merge the AI review into a recipe preview (code owns quantities/units)."""
+    if not isinstance(rev, dict):
+        return
+    cat = rev.get("category")
+    if cat and cat in prev.get("categories", []):
+        prev["category"] = cat
+    for issue in (rev.get("issues") or []):
+        if str(issue).strip():
+            prev.setdefault("warnings", []).append("AI: " + str(issue).strip())
+    name = (rev.get("recipe_name_en") or "").strip()
+    if name:
+        prev["recipe_name"] = name
+    proc = (rev.get("process_en") or "").strip()
+    if proc:
+        prev["process"] = proc
+    prev["ai_reviewed"] = True
+    prev["needs_review"] = prev.get("confidence", 100) < 100 or bool(prev.get("warnings"))

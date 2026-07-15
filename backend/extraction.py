@@ -354,9 +354,25 @@ class GeminiExtractor:
 
     def _vision(self, path: Path, mime: str, prompt: str):
         import base64
-        b64 = base64.b64encode(path.read_bytes()).decode()
+        data, mime = self._image_payload(path, mime)
+        b64 = base64.b64encode(data).decode()
         return self._generate([{"text": prompt},
                                {"inline_data": {"mime_type": mime, "data": b64}}])
+
+    def _image_payload(self, path: Path, mime: str):
+        """Downscale big photos/screenshots before sending — faster & lighter."""
+        raw = path.read_bytes()
+        if mime.startswith("image/") and len(raw) > 1_500_000:
+            try:
+                import io
+                from PIL import Image
+                im = Image.open(io.BytesIO(raw)).convert("RGB")
+                im.thumbnail((1600, 1600))
+                buf = io.BytesIO(); im.save(buf, format="JPEG", quality=85)
+                return buf.getvalue(), "image/jpeg"
+            except Exception:
+                pass
+        return raw, mime
 
     def _candidates(self):
         """Models to try, best first: last-known-good, the env override, the models
@@ -407,9 +423,9 @@ class GeminiExtractor:
             r = None
             for attempt in range(3):                       # auto-retry transient overloads
                 try:
-                    r = requests.post(url, json=body, timeout=120)
+                    r = requests.post(url, json=body, timeout=75)
                 except Exception as e:
-                    raise ExtractionError(f"AI service unreachable: {e}")
+                    raise ExtractionError(f"AI service is slow or unreachable right now: {e}")
                 if r.status_code not in (500, 502, 503, 504):
                     break
                 time.sleep(2 * (attempt + 1))
@@ -476,3 +492,30 @@ def get_extractor():
     if settings.llm_enabled():
         return AzureOpenAIExtractor()
     return HeuristicExtractor()           # free, files-only, no free-text translation
+
+
+# --------------------------------------------------- AI validation pass -------
+_REVIEW_SYSTEM = """You review a standardized pastry recipe that was already extracted.
+Return ONLY JSON:
+{"category":"<exactly ONE value from the ALLOWED list>",
+ "issues":["<short real problems: an error, an inconsistent ratio, a likely ACCIDENTAL
+            duplicate ingredient, a suspicious quantity, a rule that seems broken>"],
+ "recipe_name_en":"<the recipe name in English, Title Case>",
+ "process_en":"<the method/process text in English>"}
+Rules: do NOT change quantities or units. Do NOT merge duplicate ingredients (repeats
+are often intentional stages) — you may FLAG a clearly accidental one in "issues".
+List only REAL problems; use [] if none. Keep the name/process faithful, just in English."""
+
+def review_recipe(recipe: dict, categories):
+    """Ask Gemini to categorize, translate and flag issues on an already-extracted
+    recipe. Reuses the model auto-detect + retry logic. Raises on failure so the
+    caller can degrade gracefully (never blocks the conversion)."""
+    payload = {
+        "recipe_name": recipe.get("recipe_name", ""),
+        "process": recipe.get("process", ""),
+        "ingredients": [{"name": i["name"], "qty": i["qty"], "unit": i["unit"]}
+                        for i in recipe.get("ingredients", [])],
+    }
+    text = (_REVIEW_SYSTEM + "\n\nALLOWED categories: " + " | ".join(categories)
+            + "\n\nRECIPE:\n" + json.dumps(payload, ensure_ascii=False))
+    return GeminiExtractor()._generate([{"text": text}])

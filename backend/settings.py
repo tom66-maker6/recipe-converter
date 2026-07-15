@@ -52,6 +52,10 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 def gemini_enabled() -> bool:
     return bool(GEMINI_API_KEY)
 
+# Run an AI validation pass (categorize, translate, flag errors/duplicates) on
+# EVERY recipe when Gemini is configured. Failures never block the conversion.
+AI_REVIEW_ENABLED = os.getenv("AI_REVIEW_ENABLED", "true").lower() == "true"
+
 # --- auth / roles (self-managed — NO corporate directory / Entra required) ---
 # AUTH_MODE: 'code' = one shared access code (default) | 'users' = per-user accounts
 #            | 'dev' = open, local testing only.

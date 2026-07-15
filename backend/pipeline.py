@@ -61,10 +61,33 @@ def _titlecase_name(name: str) -> str:
     return " ".join(w if any(c.isdigit() for c in w) else w.capitalize()
                     for w in (name or "").split()) or "Untitled Recipe"
 
+def rescale_to_total(norm, target):
+    """Scale the GRAM ingredients so the recipe total (grams + pieces) ≈ target,
+    keeping every quantity a WHOLE gram and every ingredient ≥ 1. Pieces stay as-is.
+    The rounding error is absorbed by the largest ingredient so the total lands on
+    target exactly. Returns the scale factor, or None if it couldn't be applied.
+    Modifies norm in place."""
+    if not target or target <= 0:
+        return None
+    gram = [n for n in norm if n["unit"] == "Gr" and n["qty"] > 0]
+    piece_sum = sum(n["qty"] for n in norm if n["unit"] != "Gr")
+    total = sum(n["qty"] for n in gram)
+    budget = target - piece_sum
+    if not gram or total <= 0 or budget < len(gram):
+        return None
+    factor = budget / total
+    for n in gram:
+        n["qty"] = max(1, round(n["qty"] * factor))
+    diff = budget - sum(n["qty"] for n in gram)
+    if diff:
+        biggest = max(gram, key=lambda n: n["qty"])
+        biggest["qty"] = max(1, biggest["qty"] + diff)
+    return factor
+
 def build_preview(raw, db: IngredientDB, ocr_uncertainty=0):
     norm = normalize_recipe(raw.get("ingredients", []), db, CFG)
     process = raw.get("process", "") or ""
-    score, reasons = score_recipe(norm, process, CFG, ocr_uncertainty)
+    score, reasons = score_recipe(norm, process, CFG, ocr_uncertainty)   # checks on ORIGINAL qty
 
     conversions, warnings = [], list(reasons)
     for n in norm:
@@ -82,6 +105,12 @@ def build_preview(raw, db: IngredientDB, ocr_uncertainty=0):
                 seen.add(x); out.append(x)
         return out
     conversions, warnings = _dedupe(conversions), _dedupe(warnings)
+
+    # --- auto-rescale the whole recipe to ~1 kg total (whole grams) ---
+    target = CFG.get("rescale_total_grams", 0)
+    factor = rescale_to_total(norm, target)
+    if factor:
+        conversions.append(f"Recipe rescaled to ~{target} g total (×{round(factor, 3)}).")
 
     today = datetime.date.today().strftime("%d/%m/%Y")
     ingredients = [{
