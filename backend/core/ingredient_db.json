@@ -49,6 +49,7 @@
     "honey": "Honey",
     "miel": "Honey",
     "glucose": "Glucose",
+    "glucose syrup": "Glucose Syrup",
     "sirop de glucose": "Glucose",
     "trimoline": "Inverted Sugar",
     "invert sugar": "Inverted Sugar",
@@ -78,7 +79,7 @@
     "Butter", "Almond Powder", "Flour", "Corn Starch", "Cassonade", "Brown Sugar",
     "Demerara Sugar", "Gelatine Mass", "Pasteurized Whole Egg", "Pasteurized Egg Yolks",
     "Pasteurized Egg Whites", "Salt", "Vanilla", "Baking Soda", "Baking Powder",
-    "Water", "Cocoa Powder", "Honey", "Glucose", "Inverted Sugar", "Cream Cheese",
+    "Water", "Cocoa Powder", "Honey", "Glucose", "Glucose Syrup", "Inverted Sugar", "Cream Cheese",
     "Mascarpone", "Condensed Milk", "Lemon", "Lemon Juice", "Orange", "Orange Juice",
     "Hazelnut", "Pistachio", "Praline", "Coffee"
   ]

@@ -91,8 +91,9 @@ _JUNK = re.compile(r"(cost center|cost:|code|rev\b|révision|revision|approv|pri
 
 _NAME_HDR = ("ingredient", "ingredients", "ingrédient", "ingredient", "component", "composant",
              "item", "items", "produit", "product", "formula", "formule", "recette")
-_QTY_HDR = ("quantit", "qty", "weight", "poids", "amount", "grams", "gramme", "gr ")
+_QTY_HDR = ("quantit", "qty", "weight", "poids", "amount", "grams", "gramme", "gr ", "recipe 1", "recipe1", "recette 1")
 _COST_HDR = ("cost", "price", "prix", "code", "extended", "total", "%")
+_INDEX_HDR = ("s.no", "s. no", "s no", "sno", "serial", "index", "sr.", "sr ", "item no")
 _UNIT_TOKENS = {"gr", "g", "gm", "gram", "grams", "gramme", "grammes", "kg", "kilo", "pcs", "pc",
                 "piece", "pieces", "pièce", "ml", "l", "cl", "dl", "pod", "pods", "gousse", "gousses",
                 "unit", "units", "u", "ea", "tsp", "tbsp", "oz", "leaf", "leaves", "feuille", "feuilles",
@@ -106,6 +107,18 @@ def _num(s):
 
 def _is_unit(v):
     return str(v).strip().lower() in _UNIT_TOKENS
+
+def _is_index_header(h):
+    h = (h or "").strip().lower()
+    return h in ("no", "no.", "n°", "#", "num", "id", "s.no", "sno") or any(t in h for t in _INDEX_HDR)
+
+def _is_serial(nums):
+    """True if the values are a consecutive integer sequence (1,2,3… = a row index)."""
+    ints = [n for n in nums if n is not None]
+    if len(ints) < 3 or not all(float(n).is_integer() for n in ints):
+        return False
+    seq = [int(n) for n in ints]
+    return seq[0] in (0, 1) and seq == list(range(seq[0], seq[0] + len(seq)))
 
 def _clean(s):
     return re.sub(r"\s+", " ", str(s)).strip(" :-–").strip()
@@ -146,7 +159,7 @@ def _pick_qty_unit(header_row, data_rows, name_col):
         if j == name_col:
             continue
         hdr = str(header_row[j]).strip().lower() if j < len(header_row) else ""
-        if any(x in hdr for x in _COST_HDR):
+        if any(x in hdr for x in _COST_HDR) or _is_index_header(hdr):   # skip cost / S.No columns
             continue
         vals = [r[j] for r in data_rows if j < len(r) and str(r[j]).strip() != ""]
         if not vals:
@@ -157,6 +170,8 @@ def _pick_qty_unit(header_row, data_rows, name_col):
             best_unit, unit_col = unit_ratio, j
         if num_ratio >= 0.5:
             nums = [_num(v) for v in vals if _num(v) is not None]
+            if _is_serial(nums):        # 1,2,3,4… = a row-number column, never a quantity
+                continue
             numeric.append((j, hdr, any(n not in (0, None) for n in nums)))
     qty_col = None
     for j, hdr, _ in numeric:                       # prefer a quantity-named column
@@ -168,11 +183,20 @@ def _pick_qty_unit(header_row, data_rows, name_col):
                 qty_col = j; break
     return qty_col, unit_col
 
+def _pct_column(header_row):
+    """Index of a '%' column, if the source states ingredient percentages."""
+    for j, c in enumerate(header_row):
+        h = str(c).strip().lower()
+        if h in ("%", "%age") or h.startswith("%") or "percent" in h or "pourcent" in h:
+            return j
+    return None
+
 def _ingredients_from_table(rows):
     hdr = _find_ingredient_header(rows)
     if hdr is None:
         return []
     i, name_col, qty_col, unit_col = hdr
+    pct_col = _pct_column(rows[i])
     out, blanks = [], 0
     for row in rows[i + 1:]:
         name = str(row[name_col]).strip() if name_col < len(row) and row[name_col] is not None else ""
@@ -188,7 +212,12 @@ def _ingredients_from_table(rows):
         if qty is None:
             continue
         unit = str(row[unit_col]).strip() if (unit_col is not None and unit_col < len(row) and row[unit_col] is not None) else ""
-        out.append({"name": name, "qty": qty, "unit": unit})
+        item = {"name": name, "qty": qty, "unit": unit}
+        if pct_col is not None and pct_col < len(row):          # keep the source % for the sanity check
+            pv = _num(row[pct_col])
+            if pv is not None:
+                item["source_pct"] = pv
+        out.append(item)
     return out
 
 def _looks_like_ingredient_table(rows):

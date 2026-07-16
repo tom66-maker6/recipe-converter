@@ -84,6 +84,26 @@ def rescale_to_total(norm, target):
         biggest["qty"] = max(1, biggest["qty"] + diff)
     return factor
 
+def _source_proportion_deviation(raw_ingredients):
+    """Compare the extracted-quantity proportions to the source's own '%' column.
+    Returns the largest deviation in percentage points, or None if not checkable.
+    Catches a scrambled extraction (e.g. reading a row-number column as quantities)."""
+    items = []
+    for i in raw_ingredients:
+        q, p = i.get("qty"), i.get("source_pct")
+        if q is not None and p is not None:
+            try:
+                items.append((float(q), float(p)))
+            except (TypeError, ValueError):
+                pass
+    if len(items) < 2:
+        return None
+    total = sum(q for q, _ in items)
+    src_sum = sum(p for _, p in items)
+    if total <= 0 or not (50 <= src_sum <= 150):     # the source % must look like real percentages
+        return None
+    return max(abs(q / total * 100 - p) for q, p in items)
+
 def build_preview(raw, db: IngredientDB, ocr_uncertainty=0):
     norm = normalize_recipe(raw.get("ingredients", []), db, CFG)
     process = raw.get("process", "") or ""
@@ -93,6 +113,12 @@ def build_preview(raw, db: IngredientDB, ocr_uncertainty=0):
     for n in norm:
         for note in n["notes"]:
             (conversions if ("→" in note or "Gelatine:" in note or "Eggs:" in note) else warnings).append(note)
+
+    # proportion sanity: extracted quantities must match the recipe's own % column
+    dev = _source_proportion_deviation(raw.get("ingredients", []))
+    if dev is not None and dev > 3:
+        warnings.append("Proportion check: the extracted quantities do not match the recipe's own "
+                        f"% column (off by up to {round(dev)} points) — please verify the quantities.")
 
     cat, cat_status = classify_category(raw.get("recipe_name", ""), norm, raw.get("category_hint", ""))
     if cat_status == "low-confidence":
