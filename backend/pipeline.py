@@ -104,8 +104,22 @@ def _source_proportion_deviation(raw_ingredients):
         return None
     return max(abs(q / total * 100 - p) for q, p in items)
 
+def _number_duplicates(norm):
+    """When a standardized ingredient name repeats, tag each with (1), (2)… so the
+    duplicates stay distinct (they are never merged)."""
+    totals = {}
+    for n in norm:
+        totals[n["name"]] = totals.get(n["name"], 0) + 1
+    seen = {}
+    for n in norm:
+        nm = n["name"]
+        if totals.get(nm, 0) > 1:
+            seen[nm] = seen.get(nm, 0) + 1
+            n["name"] = f"{nm} ({seen[nm]})"
+
 def build_preview(raw, db: IngredientDB, ocr_uncertainty=0):
     norm = normalize_recipe(raw.get("ingredients", []), db, CFG)
+    _number_duplicates(norm)
     process = raw.get("process", "") or ""
     score, reasons = score_recipe(norm, process, CFG, ocr_uncertainty)   # checks on ORIGINAL qty
 

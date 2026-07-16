@@ -81,7 +81,7 @@ def load_source(path: Path):
     return READERS[ext](path)
 
 # ------------------------------------------------------- shared helpers ----
-_NAME_RE = re.compile(r"(item|recipe|recette|produit|product|name|nom)\s*[:\-]\s*(.+)", re.I)
+_NAME_RE = re.compile(r"(item|recipe|recette|produit|product|name|nom)(?:\s+(?:name|nom))?\s*[:\-]\s*(.+)", re.I)
 _CAT_RE = re.compile(r"(category|cat[ée]gorie)\s*[:\-]\s*(.+)", re.I)
 _METHOD_HDR = re.compile(r"^(method|méthode|methode|process|procédé|procede|preparation|préparation|steps?)\b", re.I)
 _METHOD_LABEL = re.compile(r"^(process|method|méthode|methode|procédé|procede|preparation|préparation)\b\s*[:\-]?\s*$", re.I)
