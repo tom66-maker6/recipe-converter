@@ -95,3 +95,6 @@ textarea.proc{width:100%;min-height:70px;border:1px solid var(--line);border-rad
 .spinner{display:inline-block;width:13px;height:13px;border:2px solid #d8b; border-top-color:transparent;
   border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+.appfoot{ text-align:center; padding:18px 0 28px; }
+.appfoot .muted{ font-size:12px; opacity:.55; letter-spacing:.3px; }

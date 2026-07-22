@@ -10,10 +10,16 @@ import re
 from ingredient_db import _key
 
 _KG   = ("kg", "kilo", "kilogram", "kilogramme", "kilogrammes")
-_GRAM = ("g", "gr", "gram", "grams", "gramme", "grammes", "gm")
+_GRAM = ("g", "gr", "gram", "grams", "gramme", "grammes", "gm", "gms", "grm", "grms")
 _PCS  = ("pc", "pcs", "piece", "pieces", "piÃ¨ce", "piece", "unit", "units", "u",
          "x", "pod", "pods", "gousse", "gousses", "ea")
 _SHEET = ("sheet", "sheets", "feuille", "feuilles", "leaf", "leaves")
+# volume → grams, assuming density ~1 (fine for pastry liquids)
+_ML = {"ml": 1, "milliliter": 1, "millilitre": 1, "cc": 1, "cl": 10, "dl": 100,
+       "l": 1000, "lt": 1000, "liter": 1000, "litre": 1000}
+# too generic to standardize — the chef must state which one (brand/type)
+_GENERIC = ("pectin", "candied fruit", "candied fruits", "stabilizer", "stabiliser",
+            "stabilizers", "stabilisers")
 
 def _is_gelatine(name: str) -> bool:
     return "gelatin" in _key(name)   # matches gelatin / gelatine / gélatine
@@ -54,24 +60,31 @@ def normalize_ingredient(raw, db, cfg):
     # ---------- 2. NAME standardization ----------
     name, status = db.standardize(name_in)
     if status == "unknown":
-        notes.append(f"Unknown ingredient: '{name}' (not yet in ingredient database)")
+        if _key(name) in _GENERIC:
+            notes.append(f"Please specify which '{name}' (type/brand) — too generic to standardize")
+        else:
+            notes.append(f"Unknown ingredient: '{name}' (not yet in ingredient database)")
 
-    # ---------- 3. EGGS: whole eggs counted in pieces -> grams ----------
+    # ---------- 3. EGGS ----------
     kind = _egg_kind(name)
-    if kind and (unit_k in _PCS or unit_k in ("", "oeuf", "egg", "oeufs", "eggs")):
-        if kind == "whole":
-            grams = qty * cfg["egg_gram_weight"]
-            notes.append(f"Eggs: {int(qty)} × {cfg['egg_gram_weight']} g → {round(grams)} g")
-            return _row(name, round(grams), "Gr", status, notes)
-        # yolks/whites by piece have no configured gram factor -> keep pieces + flag
-        notes.append(f"No gram factor for {kind} eggs by piece — left as pieces, please verify")
-        return _row(name, round(qty), "Pcs", status, notes)
+    if kind in ("white", "yolk"):
+        # egg WHITES and YOLKS are ALWAYS weighed in grams (never pieces)
+        grams = round(qty * 1000) if unit_k in _KG else round(qty)
+        return _row(name, grams, "Gr", status, notes)
+    if kind == "whole" and unit_k in _PCS:
+        # only WHOLE eggs can be counted in pieces -> grams
+        grams = qty * cfg["egg_gram_weight"]
+        notes.append(f"Eggs: {int(qty)} × {cfg['egg_gram_weight']} g → {round(grams)} g")
+        return _row(name, round(grams), "Gr", status, notes)
+    # whole eggs given in grams (or no unit) fall through to normal unit handling below
 
     # ---------- 4. UNIT normalization ----------
     if unit_k in _KG:
         return _row(name, round(qty * 1000), "Gr", status, notes)
     if unit_k in _GRAM:
         return _row(name, round(qty), "Gr", status, notes)
+    if unit_k in _ML:
+        return _row(name, round(qty * _ML[unit_k]), "Gr", status, notes)   # volume ≈ mass
     if unit_k in _PCS:
         return _row(name, round(qty), "Pcs", status, notes)
     if unit_k == "":

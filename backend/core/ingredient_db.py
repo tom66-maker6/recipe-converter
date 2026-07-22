@@ -5,7 +5,7 @@ Guarantees CONSISTENCY: once a name maps to a canonical form, that exact form is
 reused forever. The LLM proposes raw names; this layer disposes. Unknown names
 pass through (Title-Cased) and are flagged so confidence drops — never invented.
 """
-import json, re, unicodedata
+import json, re, unicodedata, difflib
 
 def _key(s: str) -> str:
     """Accent/ligature/case-insensitive lookup key (handles French)."""
@@ -22,6 +22,30 @@ _MILK_KEEP  = ("skim", "ecreme", "demi", "semi", "condens", "concentr", "evapor"
                "oat", "coco", "riz", "rice", "poudre", "powder")
 _CREAM_KEEP = ("whipping", "fouett", "mont", "aigre", "sour", "double", "epaiss",
                "clotted", "single", "fraiche", "fraich")
+# preparation STATES — same raw material, different form -> keep the name as written
+# (melted butter, whipped cream, melted chocolate, toasted nuts…), never reduce to base.
+_STATE_WORDS = ("melted", "whipped", "toasted", "roasted", "caramelized", "caramelised",
+                "softened", "soft", "browned", "fondu", "fondue", "montee", "monte",
+                "grille", "torref", "caramelise", "pomade", "pommade")
+
+# Base vocabulary for typo tolerance — the type/rule words plus common descriptors,
+# so misspellings (Millk, Freash, Roated, Penuts) snap back even when the AI is down.
+_SEED_VOCAB = (
+    "milk", "lait", "cream", "creme", "flour", "farine", "egg", "eggs", "oeuf", "oeufs",
+    "yolk", "yolks", "jaune", "jaunes", "white", "whites", "blanc", "blancs", "whole",
+    "chocolate", "chocolat", "couverture", "cocoa", "cacao", "butter", "beurre", "sugar",
+    "sucre", "water", "salt", "yeast", "fresh", "dry", "active", "instant", "roasted",
+    "toasted", "salted", "unsalted", "melted", "whipped", "softened", "peanut", "peanuts",
+    "almond", "almonds", "hazelnut", "hazelnuts", "pistachio", "walnut", "walnuts", "pecan",
+    "pecans", "cashew", "cashews", "coconut", "desiccated", "vanilla", "gelatine", "gelatin",
+    "honey", "glucose", "cornstarch", "corn", "starch", "powder", "paste", "juice", "zest",
+    "extract", "syrup", "inverted", "invert", "brown", "icing", "caster", "cheese",
+    "mascarpone", "ricotta", "philadelphia", "cinnamon", "nutmeg", "ginger", "lemon",
+    "orange", "coffee", "praline", "raisins", "sultanas", "baking", "soda", "cream",
+    "buttermilk", "condensed", "evaporated", "mixture", "batter", "sauce",
+)
+# words with digits/percent/symbols are left untouched (e.g. '70%', 'T45')
+_HAS_SYMBOL = re.compile(r"[0-9%()/.,]")
 
 class IngredientDB:
     def __init__(self, path):
@@ -29,18 +53,63 @@ class IngredientDB:
         raw = json.load(open(path, encoding="utf-8"))
         self.aliases = {_key(k): v for k, v in raw.get("aliases", {}).items()}
         self.known = set(raw.get("known_canonicals", []))
+        self._build_vocab()
+
+    def _build_vocab(self):
+        """Word list for typo tolerance — built ONLY from correctly-spelled sources
+        (seed + states + alias *values* + canonical names). Alias KEYS are excluded
+        on purpose: they may hold deliberate misspellings (e.g. 'caster suger'), which
+        would otherwise mark a typo as 'correct' and block its correction."""
+        vocab = set(_SEED_VOCAB) | set(_STATE_WORDS)
+        for v in self.aliases.values():              # canonical targets only
+            vocab.update(_key(v).split())
+        for c in self.known:                         # canonical names
+            vocab.update(_key(c).split())
+        vocab = {w for w in vocab if len(w) >= 3}
+        self._vocab = vocab
+        self._vocab_list = sorted(vocab)
 
     def add_correction(self, raw_name: str, canonical: str):
         """Permanently remember raw_name -> canonical and reuse it forever."""
         self.aliases[_key(raw_name)] = canonical
         self.known.add(canonical)
+        self._build_vocab()
         self._save()
 
     def _save(self):
         json.dump({"aliases": self.aliases, "known_canonicals": sorted(self.known)},
                   open(self.path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
+    def _spell_correct(self, name: str) -> str:
+        """Fix per-word typos against the vocabulary (Millk->milk, Roated->roasted).
+        Words with digits/symbols or already-known words are left untouched."""
+        out, changed = [], False
+        for w in str(name).split():
+            wl = _key(w)
+            if not wl or _HAS_SYMBOL.search(w) or len(wl) < 4 or wl in self._vocab:
+                out.append(w); continue
+            m = difflib.get_close_matches(wl, self._vocab_list, n=1, cutoff=0.80)
+            if m and m[0] != wl:
+                out.append(m[0]); changed = True
+            else:
+                out.append(w)
+        return " ".join(out) if changed else str(name)
+
     def standardize(self, name: str):
+        """Return (canonical_name, status). Falls back to typo-correction so common
+        misspellings resolve deterministically, even when the AI extractor is off."""
+        r = self._standardize_raw(name)
+        if r[1] != "unknown":
+            return r
+        fixed = self._spell_correct(name)                 # typo tolerance, retry once
+        if _key(fixed) != _key(name):
+            r2 = self._standardize_raw(fixed)
+            if r2[1] != "unknown":
+                return r2[0], "standardized"
+            return _title(fixed), "unknown"               # at least the spelling is fixed
+        return r
+
+    def _standardize_raw(self, name: str):
         """Return (canonical_name, status): known / standardized / unknown."""
         k = _key(name)
 
@@ -48,6 +117,11 @@ class IngredientDB:
         if k in self.aliases:
             c = self.aliases[k]
             return c, ("known" if _key(c) == k else "standardized")
+
+        # 0.5 Preparation STATE (melted / whipped / toasted…) — a distinct form of the
+        #     same material; keep the name as written, never reduce it to the base.
+        if any(re.search(rf"\b{s}\b", k) for s in _STATE_WORDS):
+            return _title(name), "known"
 
         # 1. Chocolate — translate the LANGUAGE only, never touch the description.
         #    \b after each term stops 'chocolat' from matching inside 'Chocolate'.
@@ -73,6 +147,14 @@ class IngredientDB:
         # 4. Cream — bare cream/creme/liquide => Heavy Cream; other type kept.
         if re.search(r"\b(creme|cream)\b", k):
             return (_title(name), "known") if any(q in k for q in _CREAM_KEEP) else ("Heavy Cream", "standardized")
+
+        # 5. Flour — bare flour/farine => Flour T55; a specified flour (T45, strong,
+        #    cake, bread…) is kept. (corn/almond/rice flour are handled by aliases.)
+        if re.search(r"\b(flour|farine)\b", k):
+            if k in ("flour", "farine", "plain flour", "all purpose flour", "all-purpose flour",
+                     "flour t55", "flour t 55", "farine t55"):
+                return "Flour T55", "standardized"
+            return _title(name), "known"
 
         # 6. Fallback — Title Case; flag if not a known canonical.
         out = _title(name)

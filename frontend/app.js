@@ -19,6 +19,12 @@ let ME = {is_admin:false}, CURRENT_BATCH = null, POLL = null;
   }catch(e){ window.location = "/login"; }   // not signed in → go to the login page
 })();
 
+// ---------- version tag (confirms which build is live) ----------
+(async () => {
+  try{ const v = await api("/api/version"); $("#verTag").textContent = "version " + v.version; }
+  catch(e){}
+})();
+
 // ---------- upload ----------
 const dz = $("#dropzone"), input = $("#fileInput");
 $("#browseBtn").onclick = (e)=>{ e.stopPropagation(); input.click(); };

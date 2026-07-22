@@ -8,6 +8,11 @@ reads them as ordinary env vars while the actual secret stays in Key Vault.
 import os
 from pathlib import Path
 
+# Bump this on every deploy so you can confirm the live app is the new code:
+# open  https://<your-app>/api/version  in a browser and check it matches.
+VERSION = "2026.07.22"
+VERSION_NOTE = "Soft Butter state + full PROCEDURE capture + typo tolerance"
+
 BASE_DIR = Path(__file__).resolve().parent
 CORE_DIR = BASE_DIR / "core"
 FRONTEND_DIR = BASE_DIR.parent / "frontend"

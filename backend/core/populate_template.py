@@ -61,6 +61,23 @@ def _set_number(sheet: str, coord: str, value) -> str:
     build = lambda s: f'<c r="{coord}" s="{s}"><v>{_num(value)}</v></c>'
     return _replace_cell(sheet, coord, build)
 
+def _fit_row_height(sheet: str, rownum: int, text: str, width_chars: int = 95,
+                    base: float = 205.5, per_line: float = 15.5, cap: float = 409.0) -> str:
+    """Raise a row's height so a long wrapped process stays fully visible. Never
+    shrinks below the template's own height — only grows for oversized content."""
+    lines = 0
+    for para in str(text).split("\n"):
+        lines += max(1, -(-len(para) // width_chars))     # ceil: visual wrapped lines
+    ht = min(cap, max(base, lines * per_line))
+    if ht <= base:
+        return sheet
+    m = re.search(rf'<row r="{rownum}"([^>]*?)>', sheet)
+    if not m:
+        return sheet
+    attrs = re.sub(r'\s+ht="[^"]*"', '', m.group(1))
+    attrs = re.sub(r'\s+customHeight="[^"]*"', '', attrs)
+    return sheet[:m.start()] + f'<row r="{rownum}"{attrs} ht="{ht:g}" customHeight="1">' + sheet[m.end():]
+
 def _set_formula_cache(sheet: str, coord: str, value) -> str:
     """Refresh a formula cell's cached RESULT without altering its <f> formula.
     Keeps the workbook internally consistent so any viewer shows the right numbers
@@ -96,9 +113,10 @@ def populate(template_path: str, data: dict, output_path: str) -> None:
         sheet = _set_text(sheet,   f"D{row}", ing["unit"])          # Gr / Pcs
         sheet = _set_number(sheet, f"E{row}", ing["qty"])           # Recipe 1 only
 
-    # --- process ---
+    # --- process (full method, may span many lines) ---
     if data.get("process"):
         sheet = _set_text(sheet, "A38", data["process"])
+        sheet = _fit_row_height(sheet, 38, data["process"])
 
     # --- refresh cached results of the auto-calc columns (%, Recipe 2-5, totals)
     #     so the file displays correctly in every viewer, not just on Excel recalc.

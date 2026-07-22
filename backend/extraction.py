@@ -47,7 +47,7 @@ def read_xlsx(path):
             cells = [("" if v is None else str(v).strip()) for v in row]
             rows.append(cells)
         if any(any(c for c in r) for r in rows):
-            blocks.append({"type": "table", "rows": rows})
+            blocks.append({"type": "table", "rows": rows, "sheet": ws.title})
     return blocks
 
 def read_pdf_text(path):
@@ -85,6 +85,16 @@ _NAME_RE = re.compile(r"(item|recipe|recette|produit|product|name|nom)(?:\s+(?:n
 _CAT_RE = re.compile(r"(category|cat[ée]gorie)\s*[:\-]\s*(.+)", re.I)
 _METHOD_HDR = re.compile(r"^(method|méthode|methode|process|procédé|procede|preparation|préparation|steps?)\b", re.I)
 _METHOD_LABEL = re.compile(r"^(process|method|méthode|methode|procédé|procede|preparation|préparation)\b\s*[:\-]?\s*$", re.I)
+# Broad header detector for GRID sheets: recognises many spellings of the method
+# section (PROCEDURE / Method / Préparation / Steps / Directions / Mode opératoire…),
+# with or without a trailing ':' and with or without a first step inline in the cell.
+_METHOD_START = re.compile(
+    r"^\s*(?:recipe\s+|recette\s+)?"
+    r"(proc[ée]dures?|proc[ée]d[ée]s?|process|methods?|m[ée]thodes?|preparations?|"
+    r"pr[ée]parations?|steps?|directions?|instructions?|mode\s+op[ée]ratoire|"
+    r"[ée]laborations?|elaborations?|fabrications?|montages?|assembly|assemblage|dressage)"
+    r"\b\s*[:\-–.]?\s*(.*)$", re.I)
+_STEP_NUM = re.compile(r"^\d{1,3}[.)°]?$")            # a step index living in its own cell
 _STOP = re.compile(r"^(comment|allerg|food allerg|picture|nutrition|yield|portion|vegetarian|dairy|nuts?|gluten|sesame|storage|shelf)", re.I)
 _JUNK = re.compile(r"(cost center|cost:|code|rev\b|révision|revision|approv|printed|imprim|page\s*\d|"
                    r"signature|department|service|outlet|hôtel|hotel|storage|allerg|uncontrolled|property of|atlantis)", re.I)
@@ -94,10 +104,10 @@ _NAME_HDR = ("ingredient", "ingredients", "ingrédient", "ingredient", "componen
 _QTY_HDR = ("quantit", "qty", "weight", "poids", "amount", "grams", "gramme", "gr ", "recipe 1", "recipe1", "recette 1")
 _COST_HDR = ("cost", "price", "prix", "code", "extended", "total", "%")
 _INDEX_HDR = ("s.no", "s. no", "s no", "sno", "serial", "index", "sr.", "sr ", "item no")
-_UNIT_TOKENS = {"gr", "g", "gm", "gram", "grams", "gramme", "grammes", "kg", "kilo", "pcs", "pc",
-                "piece", "pieces", "pièce", "ml", "l", "cl", "dl", "pod", "pods", "gousse", "gousses",
-                "unit", "units", "u", "ea", "tsp", "tbsp", "oz", "leaf", "leaves", "feuille", "feuilles",
-                "sheet", "sheets"}
+_UNIT_TOKENS = {"gr", "g", "gm", "gms", "grm", "grms", "gram", "grams", "gramme", "grammes",
+                "kg", "kilo", "pcs", "pc", "piece", "pieces", "pièce", "ml", "l", "cl", "dl",
+                "pod", "pods", "gousse", "gousses", "unit", "units", "u", "ea", "tsp", "tbsp",
+                "oz", "leaf", "leaves", "feuille", "feuilles", "sheet", "sheets"}
 
 def _num(s):
     if isinstance(s, (int, float)):
@@ -205,7 +215,9 @@ def _ingredients_from_table(rows):
             if blanks >= 3 and out:
                 break
             continue
-        if name.lower() in ("total", "totaux", "subtotal", "sub total", "grand total"):
+        low = name.lower()
+        if low.startswith(("total", "totaux", "subtotal", "sub total", "grand total",
+                           "poids total", "weight of", "weight per", "net weight")):
             break
         blanks = 0
         qty = _num(row[qty_col]) if (qty_col is not None and qty_col < len(row)) else None
@@ -223,29 +235,71 @@ def _ingredients_from_table(rows):
 def _looks_like_ingredient_table(rows):
     return _find_ingredient_header(rows) is not None
 
+_GENERIC_SHEETS = {"sheet1", "sheet2", "sheet3", "sheet", "format", "template",
+                   "feuil1", "feuille1", "sample", "recipe", "recipes"}
+_RECIPE_LABEL = re.compile(r"name\s+of\s+(?:the\s+)?recipe\s*[:\-]\s*(.+)", re.I)
+
+def _sheet_recipe_name(sheet):
+    """Use the worksheet name as the recipe name, unless it's a generic tab name."""
+    s = re.sub(r"\s+", " ", str(sheet or "")).strip()
+    return None if not s or s.lower() in _GENERIC_SHEETS else s
+
 def _scan_grid_meta(rows):
     """Pull recipe name / category / process from scattered cells in a grid."""
     cells = [str(v).strip() for row in rows for v in row if str(v).strip()]
     name = None
-    for t in cells:
-        m = _NAME_RE.match(t)
-        if m and not _JUNK.search(t):
-            name = _clean(m.group(2)); break
+    for t in cells:                                    # 'Name of the recipe - X'
+        m = _RECIPE_LABEL.match(t)
+        if m:
+            name = _clean(m.group(1)); break
+    if name is None:
+        for t in cells:
+            m = _NAME_RE.match(t)
+            if m and not _JUNK.search(t):
+                name = _clean(m.group(2)); break
     cat = ""
     for t in cells:
         m = _CAT_RE.match(t)
         if m:
             cat = _clean(m.group(2)); break
-    proc, started = [], False
-    for t in cells:
-        if started:
-            if _STOP.search(t):
-                break
-            if len(t) > 12 or proc:
-                proc.append(t)
-        elif _METHOD_LABEL.match(t):
-            started = True
-    return name, cat, " ".join(proc).strip()
+    return name, cat, _grid_process(rows)
+
+
+def _grid_process(rows):
+    """Capture the FULL method/procedure from a grid — however many rows it spans.
+    Robust to the header wording (PROCEDURE / Method / Préparation / Steps…) and to
+    step numbers that live in their own column. Each source row becomes one step;
+    a leading number-only cell is re-attached as 'N.' so the numbering survives."""
+    steps, started = [], False
+    for row in rows:
+        texts = [str(v).strip() for v in row if str(v).strip()]
+        if not texts:
+            continue
+        if not started:                                   # still looking for the header
+            for c in texts:
+                m = _METHOD_START.match(c)
+                rest = m.group(2).strip() if m else ""
+                if m and (not rest or len(rest) >= 15):   # label alone, or inline 1st step
+                    started = True
+                    if len(rest) >= 3:
+                        steps.append(rest)
+                    break
+            continue
+        if any(_STOP.search(c) for c in texts):           # allergens / nutrition / next block
+            break
+        if any(_RECIPE_LABEL.match(c) for c in texts):    # a new recipe starts
+            break
+        num, body = None, []
+        for c in texts:
+            if num is None and not body and _STEP_NUM.match(c):
+                num = re.sub(r"[.)°]$", "", c)            # step index in its own cell
+            else:
+                body.append(c)
+        line = " ".join(body).strip()
+        if len(line) < 2:                                 # a stray number / empty row
+            continue
+        steps.append(f"{num}. {line}" if num else line)
+    return "\n".join(steps).strip()
 
 # --------------------------------------------------- heuristic extractor -----
 class HeuristicExtractor:
@@ -253,28 +307,30 @@ class HeuristicExtractor:
 
     def extract(self, path: Path, instructions: str = ""):   # instructions ignored (no AI)
         blocks = load_source(path)
-        tables = [b["rows"] for b in blocks if b["type"] == "table"]
+        table_blocks = [b for b in blocks if b["type"] == "table"]
         # A spreadsheet is one big grid -> grid mode (find table + scan meta cells).
         big_grid = path.suffix.lower() in (".xlsx", ".xls")
-        recipes = self._grid(tables, path) if big_grid else self._blocks(blocks, path)
+        recipes = self._grid(table_blocks, path) if big_grid else self._blocks(blocks, path)
         if not recipes:
             # fallback: try the other strategy before giving up
-            recipes = self._blocks(blocks, path) if big_grid else self._grid(tables, path)
+            recipes = self._blocks(blocks, path) if big_grid else self._grid(table_blocks, path)
         if not recipes:
             raise ExtractionError("Could not locate an ingredient table. "
                                   "Configure the AI extractor for free-form recipes.")
-        ambiguous = False
         return {"recipes": recipes, "detected": len(recipes),
-                "ambiguous_multi": ambiguous, "engine": self.name, "ocr_uncertainty": 0}
+                "ambiguous_multi": False, "engine": self.name, "ocr_uncertainty": 0}
 
-    def _grid(self, tables, path):
+    def _grid(self, table_blocks, path):
         recipes = []
-        for rows in tables:
+        for b in table_blocks:
+            rows = b["rows"] if isinstance(b, dict) else b
             ings = _ingredients_from_table(rows)
             if not ings:
                 continue
-            name, cat, proc = _scan_grid_meta(rows)
-            recipes.append({"recipe_name": name or path.stem, "category_hint": cat,
+            cell_name, cat, proc = _scan_grid_meta(rows)
+            sheet = b.get("sheet", "") if isinstance(b, dict) else ""
+            name = _sheet_recipe_name(sheet) or cell_name or path.stem
+            recipes.append({"recipe_name": name, "category_hint": cat,
                             "process": proc, "ingredients": ings})
         return recipes
 

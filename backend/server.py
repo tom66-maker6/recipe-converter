@@ -121,8 +121,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._static("login.html", "text/html; charset=utf-8")
         if path in STATIC:
             return self._static(path, STATIC[path])
+        if path == "/api/version":
+            # PUBLIC on purpose: lets you confirm which build is live after a deploy.
+            return self._json({"version": settings.VERSION, "note": settings.VERSION_NOTE})
         if path == "/api/config":
-            return self._json({"auth_mode": settings.AUTH_MODE})
+            return self._json({"auth_mode": settings.AUTH_MODE, "version": settings.VERSION})
         if path == "/api/me":
             u = self._user()
             return self._json({"email": u.email, "name": u.name, "is_admin": u.is_admin}) if u \
