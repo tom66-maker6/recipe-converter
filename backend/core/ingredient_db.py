@@ -27,6 +27,30 @@ _CREAM_KEEP = ("whipping", "fouett", "mont", "aigre", "sour", "double", "epaiss"
 _STATE_WORDS = ("melted", "whipped", "toasted", "roasted", "caramelized", "caramelised",
                 "softened", "soft", "browned", "fondu", "fondue", "montee", "monte",
                 "grille", "torref", "caramelise", "pomade", "pommade")
+# CUT / PREPARATION forms — the same base ingredient in another shape. A recipe using
+# "Chopped Apricot", "Grated Carrots", "Lemon Puree" or "Walnut Chopped" is not an
+# unknown ingredient — keep the name as written and treat it as recognised.
+_FORM_WORDS = ("chopped", "grated", "diced", "sliced", "minced", "crushed", "ground",
+               "grinded", "shredded", "flaked", "slivered", "halved", "quartered",
+               "peeled", "pitted", "seeded", "deseeded", "puree", "pureed", "pulp",
+               "mashed", "sifted", "strained", "poached", "candied", "glazed", "smoked",
+               "cubed", "julienne", "zested", "concasse", "hache", "rape", "coupe",
+               "confit", "compote", "coulis")
+# Common abbreviations the software must understand and expand automatically.
+_ABBREV = [(r"\bpwdr?\b", "powder"), (r"\bpwd\b", "powder"), (r"\bpdr\b", "powder"),
+           (r"\bpdre\b", "powder"), (r"\bb\.?\s*soda\b", "baking soda"),
+           (r"\bbicarb(?:onate)?(?:\s+of\s+soda)?\b", "baking soda"), (r"\bbkg\b", "baking"),
+           (r"\bchoc\b", "chocolate"), (r"\bveg\b", "vegetable"), (r"\bcornflr\b", "corn flour")]
+# oil TYPES to keep as written; a bare "oil" defaults to Grapeseed Oil.
+_OIL_KEEP = ("olive", "sunflower", "grapeseed", "grape seed", "vegetable", "canola",
+             "rapeseed", "colza", "corn", "peanut", "groundnut", "sesame", "coconut",
+             "walnut", "hazelnut", "avocado", "almond", "truffle", "tournesol", "pepin")
+
+def _expand_abbrev(name: str) -> str:
+    out = name
+    for pat, rep in _ABBREV:
+        out = re.sub(pat, rep, out, flags=re.I)
+    return re.sub(r"\s+", " ", out).strip()
 
 # Base vocabulary for typo tolerance — the type/rule words plus common descriptors,
 # so misspellings (Millk, Freash, Roated, Penuts) snap back even when the AI is down.
@@ -60,7 +84,7 @@ class IngredientDB:
         (seed + states + alias *values* + canonical names). Alias KEYS are excluded
         on purpose: they may hold deliberate misspellings (e.g. 'caster suger'), which
         would otherwise mark a typo as 'correct' and block its correction."""
-        vocab = set(_SEED_VOCAB) | set(_STATE_WORDS)
+        vocab = set(_SEED_VOCAB) | set(_STATE_WORDS) | set(_FORM_WORDS)
         for v in self.aliases.values():              # canonical targets only
             vocab.update(_key(v).split())
         for c in self.known:                         # canonical names
@@ -95,6 +119,11 @@ class IngredientDB:
                 out.append(w)
         return " ".join(out) if changed else str(name)
 
+    def pre_correct(self, name: str) -> str:
+        """Public spelling fix used BEFORE rule detection (e.g. so a typo'd
+        'Getaine' becomes 'Gelatine' in time for the gelatine → Gelatine Mass rule)."""
+        return self._spell_correct(name)
+
     def standardize(self, name: str):
         """Return (canonical_name, status). Falls back to typo-correction so common
         misspellings resolve deterministically, even when the AI extractor is off."""
@@ -111,6 +140,7 @@ class IngredientDB:
 
     def _standardize_raw(self, name: str):
         """Return (canonical_name, status): known / standardized / unknown."""
+        name = _expand_abbrev(name)          # Cocoa Pwd -> Cocoa Powder, B. Soda -> Baking Soda
         k = _key(name)
 
         # 0. Learned corrections + seed glossary ALWAYS win (this is the memory).
@@ -118,10 +148,25 @@ class IngredientDB:
             c = self.aliases[k]
             return c, ("known" if _key(c) == k else "standardized")
 
-        # 0.5 Preparation STATE (melted / whipped / toasted…) — a distinct form of the
-        #     same material; keep the name as written, never reduce it to the base.
-        if any(re.search(rf"\b{s}\b", k) for s in _STATE_WORDS):
+        # 0.5 Preparation STATE or CUT FORM (melted / whipped / chopped / grated / puree…)
+        #     — a distinct form of the same material; keep the name as written and treat
+        #     it as recognised rather than flagging a perfectly common ingredient.
+        if any(re.search(rf"\b{s}\b", k) for s in _STATE_WORDS + _FORM_WORDS):
             return _title(name), "known"
+
+        # 0.6 Oil — a named oil is kept; a bare "oil"/"huile" defaults to Grapeseed Oil.
+        if re.search(r"\boil\b|\bhuile\b", k):
+            return (_title(name), "known") if any(q in k for q in _OIL_KEEP) \
+                   else ("Grapeseed Oil", "standardized")
+
+        # 0.7 Glucose — plain/liquid glucose => Glucose. The dry/atomised form =>
+        #     Atomised Glucose. A specified DE grade (e.g. 'Glucose DE 40') is kept.
+        if "glucose" in k:
+            if any(w in k for w in ("atomis", "atomiz", "dry", "powder", "poudre", "spray")):
+                return "Atomised Glucose", "standardized"
+            if re.search(r"\bde\s?\d", k):
+                return _title(name), "known"
+            return "Glucose", "standardized"
 
         # 1. Chocolate — translate the LANGUAGE only, never touch the description.
         #    \b after each term stops 'chocolat' from matching inside 'Chocolate'.

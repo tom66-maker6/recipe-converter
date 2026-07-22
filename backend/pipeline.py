@@ -13,7 +13,7 @@ import json as _json
 from ingredient_db import IngredientDB          # noqa: E402
 from normalize import normalize_recipe          # noqa: E402
 from checks import score_recipe                 # noqa: E402
-from populate_template import populate, safe_filename  # noqa: E402
+from populate_template import populate, populate_multi, safe_filename  # noqa: E402
 
 CFG = _json.load(open(settings.CORE_DIR / "config.json", encoding="utf-8"))
 
@@ -181,4 +181,23 @@ def generate_xlsx(recipe: dict) -> str:
     }
     out = settings.OUTPUT_DIR / safe_filename(data["recipe_name"])
     populate(str(settings.MASTER_TEMPLATE), data, str(out))
+    return str(out)
+
+def _to_data(recipe: dict) -> dict:
+    return {
+        "recipe_name": recipe["recipe_name"],
+        "category": recipe["category"] if recipe.get("category") in CATEGORIES else "Other",
+        "date_created": recipe.get("date_created") or datetime.date.today().strftime("%d/%m/%Y"),
+        "last_modified": datetime.date.today().strftime("%d/%m/%Y"),
+        "ingredients": [{"name": i["name"], "unit": i["unit"], "qty": i["qty"]}
+                        for i in recipe["ingredients"] if str(i.get("name", "")).strip()],
+        "process": recipe.get("process", ""),
+    }
+
+def generate_combined_xlsx(recipes: list, base_name: str = "") -> str:
+    """Build ONE workbook with a populated sheet per recipe (multi-recipe file export)."""
+    datas = [_to_data(r) for r in recipes if r.get("ingredients")]
+    stem = safe_filename(base_name or "Recipes")[:-5] or "Recipes"   # strip .xlsx
+    out = settings.OUTPUT_DIR / f"{stem} - All Recipes.xlsx"
+    populate_multi(str(settings.MASTER_TEMPLATE), datas, str(out))
     return str(out)

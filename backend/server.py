@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 import settings, store, jobs
-from pipeline import generate_xlsx
+from pipeline import generate_xlsx, generate_combined_xlsx
 from security import authenticate, make_session, rate_ok, record_fail, reset_fail
 from auth import resolve_user, COOKIE
 
@@ -161,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._upload()
         if path == "/api/generate":
             return self._generate()
+        if path == "/api/generate-combined":
+            return self._generate_combined()
         if path == "/api/ingredients/propose":
             b = self._json_body()
             if not b.get("raw_name") or not b.get("canonical"):
@@ -226,6 +228,18 @@ class Handler(BaseHTTPRequestHandler):
         token = uuid.uuid4().hex
         jobs.JOBS.generated[token] = {"path": path, "recipe_name": recipe["recipe_name"], "batch_id": b.get("batch_id")}
         store.record_generation(self._user(), recipe["recipe_name"], recipe.get("confidence"), recipe.get("source_name", ""))
+        self._json({"token": token, "filename": Path(path).name})
+
+    def _generate_combined(self):
+        b = self._json_body()
+        recipes = [r for r in (b.get("recipes") or []) if r.get("ingredients")]
+        if len(recipes) < 2:
+            return self._err(400, "A combined file needs at least two recipes.")
+        path = generate_combined_xlsx(recipes, b.get("file_name", ""))
+        token = uuid.uuid4().hex
+        jobs.JOBS.generated[token] = {"path": path, "recipe_name": Path(path).stem, "batch_id": b.get("batch_id")}
+        for r in recipes:
+            store.record_generation(self._user(), r.get("recipe_name", ""), r.get("confidence"), b.get("file_name", ""))
         self._json({"token": token, "filename": Path(path).name})
 
     def _download(self, token):

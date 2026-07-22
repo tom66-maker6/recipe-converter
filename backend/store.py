@@ -21,11 +21,27 @@ def _append(path, obj):
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
-# ---- shared ingredient DB (seeded once from the tested core seed) ----
+# ---- shared ingredient DB (seeded from the tested core seed, then MERGED) ----
 def _ensure_shared_db():
+    seed = json.load(open(settings.CORE_DIR / "ingredient_db.json", encoding="utf-8"))
     if not settings.SHARED_DB.exists():
-        seed = json.load(open(settings.CORE_DIR / "ingredient_db.json", encoding="utf-8"))
         json.dump(seed, open(settings.SHARED_DB, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        return
+    # Already exists (persistent disk): fold in any NEW seed entries so shipped
+    # improvements reach the live app on redeploy — without ever overwriting a
+    # learned/approved correction the team already made (their choice wins).
+    cur = json.load(open(settings.SHARED_DB, encoding="utf-8"))
+    al = cur.get("aliases", {}); kn = set(cur.get("known_canonicals", []))
+    changed = False
+    for k, v in seed.get("aliases", {}).items():
+        if k not in al:
+            al[k] = v; changed = True
+    new_known = set(seed.get("known_canonicals", [])) - kn
+    if new_known:
+        kn |= new_known; changed = True
+    if changed:
+        json.dump({"aliases": al, "known_canonicals": sorted(kn)},
+                  open(settings.SHARED_DB, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
 def load_db() -> IngredientDB:
     _ensure_shared_db()

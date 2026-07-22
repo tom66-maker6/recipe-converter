@@ -53,6 +53,12 @@ main{max-width:960px;margin:0 auto;padding:28px 20px 80px}
 .st-needs_review{background:var(--warn-soft);color:var(--warn)}
 .st-error{background:var(--bad-soft);color:var(--bad)}
 .detect-note{padding:8px 18px;background:var(--accent-soft);font-size:.86rem;color:var(--accent-dark)}
+/* prominent bar offering the single combined workbook (multi-recipe files) */
+.file-export{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 18px;
+  background:linear-gradient(90deg,var(--accent-soft),#fff);border-bottom:1px solid var(--line)}
+.file-export .export-all{font-weight:600;box-shadow:0 2px 8px rgba(122,106,85,.35)}
+.file-export .export-all:hover{transform:translateY(-1px)}
+.export-hint{font-size:.82rem}
 
 /* recipe block */
 .recipe{padding:16px 18px;border-top:1px solid var(--line)}

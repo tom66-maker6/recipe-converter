@@ -92,11 +92,9 @@ def _set_formula_cache(sheet: str, coord: str, value) -> str:
     new = f'<c r="{coord}" s="{style}">{fm.group(0)}<v>{_num(value)}</v></c>'
     return sheet[:m.start()] + new + sheet[m.end():]
 
-def populate(template_path: str, data: dict, output_path: str) -> None:
-    z = zipfile.ZipFile(template_path)
-    sheet = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
-    workbook = z.read("xl/workbook.xml").decode("utf-8")
-
+def _fill_sheet(sheet: str, data: dict) -> str:
+    """Inject one recipe's values into a copy of the template worksheet XML.
+    Shared by the single-file populate() and the combined populate_multi()."""
     # --- header fields (label prefix preserved, value appended) ---
     sheet = _set_text(sheet, "A7",  LABEL["name"]          + data["recipe_name"])
     sheet = _set_text(sheet, "C10", LABEL["category"]      + data["category"])
@@ -134,6 +132,13 @@ def populate(template_path: str, data: dict, output_path: str) -> None:
     sheet = _set_formula_cache(sheet, "E35", e_total)
     for col, mult in col_mult.items():
         sheet = _set_formula_cache(sheet, f"{col}35", e_total * mult)
+    return sheet
+
+
+def populate(template_path: str, data: dict, output_path: str) -> None:
+    z = zipfile.ZipFile(template_path)
+    sheet = _fill_sheet(z.read("xl/worksheets/sheet1.xml").decode("utf-8"), data)
+    workbook = z.read("xl/workbook.xml").decode("utf-8")
 
     # --- also flag a full recalc on open, as a belt-and-braces safeguard ---
     workbook = workbook.replace('<calcPr calcId="191028"/>',
@@ -150,3 +155,105 @@ def populate(template_path: str, data: dict, output_path: str) -> None:
             else:
                 out.writestr(item, z.read(item.filename))   # identical bytes
     z.close()
+
+
+# ---------------------------------------------------------------------------
+# Combined workbook: ONE .xlsx, one populated sheet per recipe.
+# Every recipe uses the same master template, so styles / theme / sharedStrings /
+# the logo image / printer settings are shared single parts; only the worksheet
+# and its drawing are duplicated per recipe. calcChain is dropped (Excel rebuilds
+# it) and fullCalcOnLoad forces a clean recalculation on open.
+# ---------------------------------------------------------------------------
+_INVALID_SHEET = re.compile(r'[\\/\*\?\:\[\]]')
+
+def _sheet_name(raw: str, used: set) -> str:
+    """Excel sheet-name: ≤31 chars, no \\ / * ? : [ ], unique within the book."""
+    name = _INVALID_SHEET.sub(" ", raw or "Recipe").strip()[:31].strip() or "Recipe"
+    base, n = name, 2
+    while name.lower() in used:
+        suffix = f" ({n})"
+        name = (base[:31 - len(suffix)] + suffix); n += 1
+    used.add(name.lower())
+    return name
+
+def populate_multi(template_path: str, recipes: list, output_path: str) -> None:
+    """recipes = list of populated `data` dicts (same shape populate() takes)."""
+    z = zipfile.ZipFile(template_path)
+    base_sheet = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    sheet_rels = z.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
+    drawing_xml = z.read("xl/drawings/drawing1.xml").decode("utf-8")
+    drawing_rels = z.read("xl/drawings/_rels/drawing1.xml.rels").decode("utf-8")
+    workbook = z.read("xl/workbook.xml").decode("utf-8")
+    ctypes = z.read("[Content_Types].xml").decode("utf-8")
+
+    used_names, final_names, sheet_tags, wb_rels, ct_overrides = set(), [], [], [], []
+    extra_parts = {}                    # path -> bytes
+
+    for i, data in enumerate(recipes, start=1):
+        nm = _sheet_name(data.get("recipe_name", f"Recipe {i}"), used_names)
+        final_names.append(nm)
+        rid = f"rIdS{i}"
+        sheet_tags.append(f'<sheet name="{escape(nm)}" sheetId="{i}" r:id="{rid}"/>')
+        wb_rels.append(f'<Relationship Id="{rid}" Type="http://schemas.openxmlformats.org/'
+                       f'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>')
+        # worksheet (filled) + its rels pointing at this sheet's own drawing
+        extra_parts[f"xl/worksheets/sheet{i}.xml"] = _fill_sheet(base_sheet, data).encode("utf-8")
+        extra_parts[f"xl/worksheets/_rels/sheet{i}.xml.rels"] = \
+            sheet_rels.replace("../drawings/drawing1.xml", f"../drawings/drawing{i}.xml").encode("utf-8")
+        # per-sheet drawing (logo) referencing the shared image
+        extra_parts[f"xl/drawings/drawing{i}.xml"] = drawing_xml.encode("utf-8")
+        extra_parts[f"xl/drawings/_rels/drawing{i}.xml.rels"] = drawing_rels.encode("utf-8")
+        ct_overrides.append(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType='
+                            f'"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>')
+        ct_overrides.append(f'<Override PartName="/xl/drawings/drawing{i}.xml" ContentType='
+                            f'"application/vnd.openxmlformats-officedocument.drawing+xml"/>')
+
+    # workbook.xml: swap the single <sheets>, drop the template's defined Print_Area
+    # (it named the old sheet), give each new sheet its own print area, force recalc.
+    dn = "".join(f'<definedName name="_xlnm.Print_Area" localSheetId="{i}">'
+                 f"'{escape(nm)}'!$A$1:$I$38</definedName>"
+                 for i, nm in enumerate(final_names))
+    workbook = re.sub(r"<sheets>.*?</sheets>", "<sheets>" + "".join(sheet_tags) + "</sheets>",
+                      workbook, flags=re.S)
+    workbook = re.sub(r"<definedNames>.*?</definedNames>",
+                      ("<definedNames>" + dn + "</definedNames>") if dn else "", workbook, flags=re.S)
+    workbook = workbook.replace('<calcPr calcId="191028"/>',
+                                '<calcPr calcId="191028" fullCalcOnLoad="1"/>')
+
+    # workbook rels: keep styles/theme/sharedStrings, drop calcChain, add sheets
+    keep = [ln for ln in re.findall(r"<Relationship [^>]*/>", z.read("xl/_rels/workbook.xml.rels").decode())
+            if ("/styles" in ln or "/theme" in ln or "/sharedStrings" in ln)]
+    wb_rels_xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   + "".join(keep) + "".join(wb_rels) + "</Relationships>")
+
+    # content types: drop sheet1/drawing1/calcChain overrides, add per-recipe ones
+    for tag in ('<Override PartName="/xl/worksheets/sheet1.xml"',
+                '<Override PartName="/xl/drawings/drawing1.xml"',
+                '<Override PartName="/xl/calcChain.xml"'):
+        ctypes = re.sub(re.escape(tag) + r'[^>]*/>', "", ctypes)
+    ctypes = ctypes.replace("</Types>", "".join(ct_overrides) + "</Types>")
+
+    skip = {"xl/worksheets/sheet1.xml", "xl/worksheets/_rels/sheet1.xml.rels",
+            "xl/drawings/drawing1.xml", "xl/drawings/_rels/drawing1.xml.rels",
+            "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "[Content_Types].xml",
+            "xl/calcChain.xml"}
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as out:
+        for item in z.infolist():
+            if item.filename in skip:
+                continue
+            out.writestr(item, z.read(item.filename))       # shared parts, identical bytes
+        out.writestr("xl/workbook.xml", workbook.encode("utf-8"))
+        out.writestr("xl/_rels/workbook.xml.rels", wb_rels_xml.encode("utf-8"))
+        out.writestr("[Content_Types].xml", ctypes.encode("utf-8"))
+        for path, blob in extra_parts.items():
+            out.writestr(path, blob)
+    z.close()
+
+
+def used_names_ordered(recipes, _used):
+    """Re-derive the final, deduped sheet names in order (for print-area names)."""
+    seen, out = set(), []
+    for i, data in enumerate(recipes, start=1):
+        out.append(_sheet_name(data.get("recipe_name", f"Recipe {i}"), seen))
+    return out

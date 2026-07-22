@@ -11,8 +11,9 @@ from ingredient_db import _key
 
 _KG   = ("kg", "kilo", "kilogram", "kilogramme", "kilogrammes")
 _GRAM = ("g", "gr", "gram", "grams", "gramme", "grammes", "gm", "gms", "grm", "grms")
-_PCS  = ("pc", "pcs", "piece", "pieces", "piÃ¨ce", "piece", "unit", "units", "u",
-         "x", "pod", "pods", "gousse", "gousses", "ea")
+_PCS  = ("pc", "pcs", "pce", "pces", "piece", "pieces", "pièce", "pièces", "unit", "units",
+         "u", "x", "pod", "pods", "gousse", "gousses", "ea", "each", "no", "no.", "no's",
+         "nos", "nos.", "number", "numbers", "count", "ct")
 _SHEET = ("sheet", "sheets", "feuille", "feuilles", "leaf", "leaves")
 # volume → grams, assuming density ~1 (fine for pastry liquids)
 _ML = {"ml": 1, "milliliter": 1, "millilitre": 1, "cc": 1, "cl": 10, "dl": 100,
@@ -34,7 +35,7 @@ def _egg_kind(name: str):
 
 def normalize_ingredient(raw, db, cfg):
     """raw = {'name', 'qty', 'unit'} from extraction -> normalized dict + notes."""
-    name_in = raw["name"]
+    name_in = db.pre_correct(raw["name"])   # fix typos first (Getaine→Gelatine, Millk→Milk)
     qty = float(raw["qty"])
     unit_k = _key(str(raw.get("unit", "")))
     notes = []
@@ -97,4 +98,39 @@ def _row(name, qty, unit, status, notes):
 
 def normalize_recipe(ingredients, db, cfg):
     """Normalize a list; preserve order and duplicates exactly (never merge)."""
-    return [normalize_ingredient(r, db, cfg) for r in ingredients]
+    norm = [normalize_ingredient(r, db, cfg) for r in ingredients]
+    _fix_mislabelled_eggs(norm, ingredients, cfg)
+    return norm
+
+def _fix_mislabelled_eggs(norm, raw_list, cfg):
+    """SECONDARY safety net — the source UNIT is the primary truth. Whole eggs written
+    in pieces are already converted above; eggs written in grams are normally KEPT as
+    grams. We only reinterpret a gram value when it is clearly INCOHERENT, judged by the
+    egg's share of the TOTAL recipe mass — never an absolute threshold:
+        • 40 g of egg in a 200 g recipe  → 20 %  → real grams, keep.
+        • '40' in a 6 kg recipe          → 0.7 % → far too little egg → really 40 pieces.
+    So: reinterpret only if the value-as-grams is an implausibly tiny fraction of the
+    recipe AND reading it as a piece count (× egg weight) gives a sensible proportion."""
+    egg_w = cfg["egg_gram_weight"]
+    total = sum(n["qty"] for n in norm if n["unit"] == "Gr" and n["qty"] > 0)
+    if total <= 0:
+        return
+    for i, n in enumerate(norm):
+        if _egg_kind(n["name"]) != "whole" or n["unit"] != "Gr":
+            continue
+        raw = raw_list[i] if i < len(raw_list) else {}
+        if _key(str(raw.get("unit", ""))) in _PCS:      # source explicitly said pieces → trust it
+            continue
+        q = n["qty"]
+        if q != round(q) or q < 1:                      # a piece count is a whole number
+            continue
+        rest = total - q
+        share_g  = q / total                             # egg's share if the number is grams
+        share_pc = (q * egg_w) / (rest + q * egg_w)      # …if the number is really a count
+        if share_g < 0.04 and 0.03 <= share_pc <= 0.75:  # incoherent as grams, sensible as a count
+            g = round(q * egg_w)
+            n["qty"] = g
+            n["notes"].append(
+                f"Eggs: '{int(q)}' was written in grams but that is only {share_g*100:.1f}% of the "
+                f"recipe — implausibly low for whole eggs. Read as {int(q)} pieces → {int(q)} × {egg_w} g "
+                f"= {g} g ({share_pc*100:.0f}% of the recipe).")

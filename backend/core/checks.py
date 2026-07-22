@@ -16,6 +16,27 @@ _PROCESS_SIGNALS = {
     "coffee": ("coffee", "cafe"), "honey": ("honey", "miel"),
 }
 
+# Words that are ALSO common method verbs ("Cream the butter", "Butter the tin",
+# "Sugar the …"). For these we only count a NOUN mention, so an imperative step like
+# "Cream butter and sugar" never triggers a false 'missing ingredient' warning.
+_VERBY_LABELS = {"cream", "butter", "sugar", "milk"}
+_OBJ_CUE = (r"the|a|an|together|til|till|until|and|with|in|into|onto|then|well|thoroughly|"
+            r"lightly|butter|beurre|sugar|sucre|eggs?|oeufs?|flour|farine|it|them|your|"
+            r"mixture|batter|base|pan|tin|tray|mould|mold")
+
+def _noun_mention(term, ptext):
+    """True only if `term` appears as a real NOUN (an ingredient), not as a leading
+    imperative verb. Verb use = at the start of a step, or immediately followed by an
+    object cue ('cream the butter', 'cream butter and sugar')."""
+    for m in re.finditer(rf"\b{re.escape(term)}\b", ptext):
+        pre = ptext[:m.start()].rstrip()
+        at_clause_start = (pre == "" or pre[-1] in ".;:,(-•\n/")
+        after = ptext[m.end():].lstrip()
+        verb_like = at_clause_start or re.match(rf"(?:{_OBJ_CUE})\b", after)
+        if not verb_like:
+            return True
+    return False
+
 def score_recipe(normalized, process_text, cfg, ocr_uncertainty=0):
     reasons, score = [], 100
 
@@ -37,8 +58,9 @@ def score_recipe(normalized, process_text, cfg, ocr_uncertainty=0):
     have = " | ".join(_key(i["name"]) for i in normalized)
     ptext = _key(process_text or "")
     for label, terms in _PROCESS_SIGNALS.items():
-        if any(re.search(rf"\b{re.escape(t)}", ptext) for t in terms) and \
-           not any(t in have for t in terms):
+        mentioned = any(_noun_mention(t, ptext) for t in terms) if label in _VERBY_LABELS \
+                    else any(re.search(rf"\b{re.escape(t)}", ptext) for t in terms)
+        if mentioned and not any(t in have for t in terms):
             score -= 10
             reasons.append(f"Possible missing ingredient: {label.capitalize()} is mentioned in the process "
                            f"but not in the ingredient list")

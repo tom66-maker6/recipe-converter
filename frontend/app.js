@@ -88,7 +88,16 @@ function fileHtml(f){
   let note="";
   if(f.detected>1) note=`<div class="detect-note">${f.detected} recipes detected in this document — one Excel file will be generated per recipe.</div>`;
   if(f.ambiguous_multi) note=`<div class="detect-note">This document may contain several recipes or one recipe with sub-components. Please review before generating.</div>`;
-  return head + note + f.recipes.map((r,i)=>recipeHtml(f,r,i)).join("");
+  // Only when THIS document holds several recipes: offer a single combined workbook
+  // (one sheet per recipe). Hidden for single-recipe files and separate uploads.
+  let multi="";
+  if(f.recipes.length>1){
+    multi=`<div class="file-export">
+      <button class="btn export-all">⬇ Export all ${f.recipes.length} recipes in one Excel file</button>
+      <span class="export-hint muted">One workbook · one sheet per recipe</span>
+      <span class="combo-slot"></span></div>`;
+  }
+  return head + note + multi + f.recipes.map((r,i)=>recipeHtml(f,r,i)).join("");
 }
 
 function confClass(c){ return c>=95?"hi":c>=80?"mid":"lo"; }
@@ -125,6 +134,23 @@ function recipeHtml(f,r,idx){
 }
 
 function wireFile(el, f){
+  // combined export (multi-recipe files only)
+  const exportBtn = el.querySelector(".export-all");
+  if(exportBtn){
+    exportBtn.onclick = async ()=>{
+      const orig = exportBtn.textContent;
+      exportBtn.disabled=true; exportBtn.textContent="Building one file…";
+      const recipes=[...el.querySelectorAll(".recipe")].map((rEl,i)=>collect(rEl, f.recipes[i]));
+      try{
+        const res = await api("/api/generate-combined", {method:"POST",
+          body: JSON.stringify({recipes, file_name: f.name, batch_id: CURRENT_BATCH})});
+        el.querySelector(".combo-slot").innerHTML =
+          `<a class="btn small ghost" href="/api/download/${res.token}">⬇ ${esc(res.filename)}</a>`;
+        exportBtn.textContent="✓ Exported"; toast("Combined file ready: "+res.filename);
+        window.location = `/api/download/${res.token}`;   // start the download
+      }catch(e){ exportBtn.disabled=false; exportBtn.textContent=orig; toast("Failed: "+e.message); }
+    };
+  }
   el.querySelectorAll(".recipe").forEach((rEl,i)=>{
     const r = f.recipes[i]; if(!r) return;
     const gen = rEl.querySelector(".gen"); if(!gen) return;
