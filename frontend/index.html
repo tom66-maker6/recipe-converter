@@ -28,16 +28,34 @@
     </div>
   </section>
 
-  <!-- Optional AI instructions (collapsible) -->
-  <section class="instr">
-    <button type="button" class="instr-toggle" id="instrToggle" aria-expanded="false">
-      <span class="chev" id="instrChev">▸</span> Optional instructions
-    </button>
-    <div class="instr-body" id="instrBody" hidden>
-      <textarea id="aiInstructions" rows="4"
-        placeholder="e.g.&#10;• Replace dark chocolate with Valrhona 70%.&#10;• Rescale the whole recipe to a total of 2 kg.&#10;• Replace the butter with lamination butter.&#10;• Rename ingredient X as ingredient Y."></textarea>
-      <p class="muted">Leave empty for a normal free conversion (no AI, no quota used). If you write an
-        instruction, the free Google Gemini AI is used for that upload.</p>
+  <!-- Staged files (chosen, not yet converted) -->
+  <div class="staged" id="staged" hidden></div>
+
+  <!-- Convert bar: optional AI instructions (left) · total weight (middle) · Convert (right) -->
+  <section class="convertbar" id="convertBar">
+    <div class="cb-col cb-instr">
+      <button type="button" class="instr-toggle" id="instrToggle" aria-expanded="false">
+        <span class="chev" id="instrChev">▸</span> Optional AI instructions
+      </button>
+      <div class="instr-body" id="instrBody" hidden>
+        <textarea id="aiInstructions" rows="3"
+          placeholder="e.g.&#10;• Replace dark chocolate with Valrhona 70%.&#10;• Replace the butter with lamination butter.&#10;• Rename ingredient X as ingredient Y."></textarea>
+        <p class="muted">Leave empty for a normal free conversion (no AI, no quota used). Used only if you
+          write an instruction. The total weight on the right does <b>not</b> use AI.</p>
+      </div>
+    </div>
+
+    <div class="cb-col cb-weight">
+      <label for="targetWeight">Total weight per recipe</label>
+      <div class="wt-field">
+        <input type="number" id="targetWeight" value="1000" min="0" step="50" inputmode="numeric" />
+        <span class="wt-unit">g</span>
+      </div>
+      <p class="muted">Default 1000 g. Change it to rescale every recipe · 0 = keep original.</p>
+    </div>
+
+    <div class="cb-col cb-go">
+      <button class="btn big" id="convertBtn" disabled>Convert</button>
     </div>
   </section>
 

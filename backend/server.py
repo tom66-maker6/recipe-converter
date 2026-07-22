@@ -23,6 +23,20 @@ STATIC = {"/styles.css": "text/css", "/app.js": "application/javascript",
           "/login.html": "text/html; charset=utf-8", "/logo.png": "image/png"}
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+def _parse_target_grams(raw):
+    """Interpret the dedicated weight field. Empty/absent -> None (use the app
+    default of 1000 g). 0 -> keep the original quantities (no rescale). Any other
+    number is clamped to a sane 1 g – 1000 kg range."""
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        g = int(round(float(str(raw).replace(",", ".").strip())))
+    except (TypeError, ValueError):
+        return None
+    if g <= 0:
+        return 0
+    return max(1, min(g, 1_000_000))
+
 def _cleanup_generated():
     cutoff = datetime.datetime.now().timestamp() - settings.GENERATED_RETENTION_MINUTES * 60
     for p in settings.OUTPUT_DIR.glob("*.xlsx"):
@@ -195,10 +209,12 @@ class Handler(BaseHTTPRequestHandler):
     def _upload(self):
         files, fields = self._multipart()
         instructions = (fields.get("instructions") or "").strip()[:2000]
+        # dedicated weight field — deterministic rescale, never touches the AI path.
+        target_grams = _parse_target_grams(fields.get("target_grams"))
         if len(files) > settings.MAX_BATCH_FILES:
             return self._err(400, f"Too many files (max {settings.MAX_BATCH_FILES}).")
         u = self._user()
-        bid = jobs.JOBS.new_batch(u, instructions)
+        bid = jobs.JOBS.new_batch(u, instructions, target_grams)
         accepted = []
         for fname, data in files:
             if Path(fname).suffix.lower() not in ALLOWED_EXT:

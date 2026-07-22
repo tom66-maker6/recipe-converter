@@ -117,7 +117,7 @@ def _number_duplicates(norm):
             seen[nm] = seen.get(nm, 0) + 1
             n["name"] = f"{nm} ({seen[nm]})"
 
-def build_preview(raw, db: IngredientDB, ocr_uncertainty=0):
+def build_preview(raw, db: IngredientDB, ocr_uncertainty=0, target_grams=None):
     norm = normalize_recipe(raw.get("ingredients", []), db, CFG)
     _number_duplicates(norm)
     process = raw.get("process", "") or ""
@@ -146,8 +146,10 @@ def build_preview(raw, db: IngredientDB, ocr_uncertainty=0):
         return out
     conversions, warnings = _dedupe(conversions), _dedupe(warnings)
 
-    # --- auto-rescale the whole recipe to ~1 kg total (whole grams) ---
-    target = CFG.get("rescale_total_grams", 0)
+    # --- rescale the whole recipe to the CHOSEN total (whole grams) ---
+    # target_grams comes from the dedicated weight field (deterministic, no AI).
+    # None -> use the config default (1000 g); 0 -> keep the original quantities.
+    target = CFG.get("rescale_total_grams", 0) if target_grams is None else target_grams
     factor = rescale_to_total(norm, target)
     if factor:
         conversions.append(f"Recipe rescaled to ~{target} g total (×{round(factor, 3)}).")

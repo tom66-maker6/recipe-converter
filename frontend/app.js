@@ -25,29 +25,52 @@ let ME = {is_admin:false}, CURRENT_BATCH = null, POLL = null;
   catch(e){}
 })();
 
-// ---------- upload ----------
+// ---------- staging + convert ----------
+// Dropping/browsing now STAGES files; the actual conversion starts only when the
+// chef clicks Convert — so they can set instructions and the total weight first.
 const dz = $("#dropzone"), input = $("#fileInput");
+let STAGED = [];
 $("#browseBtn").onclick = (e)=>{ e.stopPropagation(); input.click(); };
 dz.onclick = ()=> input.click();
 ["dragenter","dragover"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add("drag");}));
 ["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("drag");}));
-dz.addEventListener("drop", e=> handleFiles(e.dataTransfer.files));
-input.addEventListener("change", ()=> handleFiles(input.files));
+dz.addEventListener("drop", e=> stageFiles(e.dataTransfer.files));
+input.addEventListener("change", ()=> { stageFiles(input.files); input.value=""; });
 
-async function handleFiles(fileList){
-  const files=[...fileList]; if(!files.length) return;
-  const fd = new FormData(); files.forEach(f=>fd.append("files", f));
+function stageFiles(fileList){
+  const add=[...fileList]; if(!add.length) return;
+  STAGED = STAGED.concat(add);
+  renderStaged();
+}
+function renderStaged(){
+  const box=$("#staged"), btn=$("#convertBtn");
+  if(!STAGED.length){ box.hidden=true; box.innerHTML=""; btn.disabled=true; btn.textContent="Convert"; return; }
+  box.hidden=false;
+  box.innerHTML = `<span class="staged-head">${STAGED.length} file(s) ready</span>` +
+    STAGED.map((f,i)=>`<span class="chip">${esc(f.name)}<button class="chip-x" data-i="${i}" title="Remove">×</button></span>`).join("");
+  box.querySelectorAll(".chip-x").forEach(b=> b.onclick=()=>{ STAGED.splice(+b.dataset.i,1); renderStaged(); });
+  btn.disabled=false; btn.textContent = `Convert ${STAGED.length} file(s)`;
+}
+
+$("#convertBtn").onclick = convertStaged;
+async function convertStaged(){
+  if(!STAGED.length) return;
+  const fd = new FormData(); STAGED.forEach(f=>fd.append("files", f));
   const instr = ($("#aiInstructions")?.value || "").trim();
   if(instr) fd.append("instructions", instr);
-  toast(`Uploading ${files.length} file(s)…`);
+  const wt = String($("#targetWeight")?.value ?? "").trim();
+  if(wt!=="") fd.append("target_grams", wt);        // dedicated weight field — no AI
+  const btn=$("#convertBtn"); btn.disabled=true;
+  toast(`Converting ${STAGED.length} file(s)…`);
   try{
     const r = await fetch("/api/upload", {method:"POST", body:fd});
     if(!r.ok) throw new Error((await r.json()).detail);
     const {batch_id} = await r.json();
     CURRENT_BATCH = batch_id;
+    STAGED=[]; renderStaged();
     $("#results").innerHTML=""; $("#batchActions").hidden=false;
     startPolling();
-  }catch(e){ toast("Upload failed: "+e.message); }
+  }catch(e){ toast("Conversion failed: "+e.message); btn.disabled=false; }
 }
 
 // ---------- polling ----------

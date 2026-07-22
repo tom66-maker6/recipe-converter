@@ -10,8 +10,8 @@ from pathlib import Path
 
 # Bump this on every deploy so you can confirm the live app is the new code:
 # open  https://<your-app>/api/version  in a browser and check it matches.
-VERSION = "2026.07.22-b2"
-VERSION_NOTE = "Proportional egg piece/gram logic + basic-ingredient forms & abbreviations"
+VERSION = "2026.07.22-b3"
+VERSION_NOTE = "Recipe name from table (Sheet6 fix) + dedicated total-weight field (no AI) + Convert button"
 
 BASE_DIR = Path(__file__).resolve().parent
 CORE_DIR = BASE_DIR / "core"

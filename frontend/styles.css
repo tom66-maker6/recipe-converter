@@ -104,3 +104,33 @@ textarea.proc{width:100%;min-height:70px;border:1px solid var(--line);border-rad
 
 .appfoot{ text-align:center; padding:18px 0 28px; }
 .appfoot .muted{ font-size:12px; opacity:.55; letter-spacing:.3px; }
+
+/* staged files (chosen, not yet converted) */
+.staged{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.staged-head{font-weight:600;font-size:.9rem;color:var(--accent-dark);margin-right:4px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--accent-soft);
+  border:1px solid var(--line);border-radius:20px;padding:5px 6px 5px 12px;font-size:.85rem}
+.chip-x{border:0;background:rgba(0,0,0,.08);color:var(--ink);border-radius:50%;
+  width:18px;height:18px;line-height:1;cursor:pointer;font-size:.9rem}
+.chip-x:hover{background:var(--bad);color:#fff}
+
+/* convert bar: instructions · weight · Convert */
+.convertbar{display:flex;gap:18px;align-items:flex-start;margin-top:18px;
+  background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.cb-col{display:flex;flex-direction:column}
+.cb-instr{flex:1 1 auto;min-width:220px}
+.cb-weight{flex:0 0 auto}
+.cb-go{flex:0 0 auto;align-self:center}
+.cb-weight label{font-weight:600;font-size:.9rem;margin-bottom:6px}
+.wt-field{display:flex;align-items:center;gap:6px}
+.wt-field input{width:110px;border:1px solid var(--line);border-radius:9px;padding:9px 10px;font:inherit;text-align:right}
+.wt-field input:focus{border-color:var(--accent);outline:none}
+.wt-unit{font-weight:600;color:var(--muted)}
+.cb-weight .muted{margin:6px 0 0;max-width:230px}
+.btn.big{padding:13px 26px;font-size:1rem}
+@media(max-width:640px){ .convertbar{flex-direction:column;gap:14px} .cb-go{align-self:stretch} .btn.big{width:100%} }
+.cb-instr .instr-body{margin-top:10px}
+.cb-instr textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+  font:inherit;resize:vertical;background:var(--card)}
+.cb-instr textarea:focus{border-color:var(--accent);outline:none}
+.cb-instr .muted{margin:6px 2px 0}

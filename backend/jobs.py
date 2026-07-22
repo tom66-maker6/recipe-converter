@@ -16,9 +16,10 @@ class JobStore:
         self.batches = {}          # batch_id -> {user_email, files:{file_id:{...}}}
         self.generated = {}        # token -> {path, recipe_name, batch_id}
 
-    def new_batch(self, user, instructions=""):
+    def new_batch(self, user, instructions="", target_grams=None):
         bid = uuid.uuid4().hex[:12]
-        self.batches[bid] = {"user_email": user.email, "files": {}, "instructions": instructions}
+        self.batches[bid] = {"user_email": user.email, "files": {},
+                             "instructions": instructions, "target_grams": target_grams}
         return bid
 
     def add_file(self, bid, filename, path):
@@ -56,8 +57,10 @@ def _worker():
             f["status"] = "processing"
             try:
                 db = store.load_db()          # pick up newly approved global mappings
-                instr = JOBS.batches[bid].get("instructions", "")
-                result = _process_one(extractor, db, Path(f["path"]), instr, f["name"])
+                batch = JOBS.batches[bid]
+                instr = batch.get("instructions", "")
+                target = batch.get("target_grams")
+                result = _process_one(extractor, db, Path(f["path"]), instr, f["name"], target)
                 f.update(engine=result["engine"], detected=result["detected"],
                          ambiguous_multi=result["ambiguous_multi"], recipes=result["recipes"])
                 if result["ambiguous_multi"]:
@@ -88,7 +91,7 @@ def _name_from_filename(fname):
     stem = re.sub(r"\s*\(\d+\)\s*$", "", stem)          # drop a trailing " (2)"
     return stem.replace("_", " ").replace("-", " ").strip()
 
-def _process_one(extractor, db, path: Path, instructions="", original_name=""):
+def _process_one(extractor, db, path: Path, instructions="", original_name="", target_grams=None):
     payload = extractor.extract(path, instructions)
     temp_stem = path.stem
     recipes = []
@@ -97,7 +100,7 @@ def _process_one(extractor, db, path: Path, instructions="", original_name=""):
         # uploaded filename (not the temporary storage name).
         if original_name and raw.get("recipe_name") in (temp_stem, "", None):
             raw["recipe_name"] = _name_from_filename(original_name)
-        prev = build_preview(raw, db, payload.get("ocr_uncertainty", 0))
+        prev = build_preview(raw, db, payload.get("ocr_uncertainty", 0), target_grams)
         prev["recipe_id"] = uuid.uuid4().hex[:8]
         prev["source_name"] = path.name
         prev["generated"] = None

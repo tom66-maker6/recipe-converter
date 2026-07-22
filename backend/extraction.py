@@ -235,34 +235,64 @@ def _ingredients_from_table(rows):
 def _looks_like_ingredient_table(rows):
     return _find_ingredient_header(rows) is not None
 
-_GENERIC_SHEETS = {"sheet1", "sheet2", "sheet3", "sheet", "format", "template",
-                   "feuil1", "feuille1", "sample", "recipe", "recipes"}
+_GENERIC_SHEETS = {"format", "template", "sample", "recipe", "recipes", "feuille", "hoja"}
+# Any bare "Sheet"/"Feuil"/"Hoja"/"Recipe"/"Table"/"Page" tab, with or without a
+# trailing number (Sheet6, Feuil2, Table1, Recette 3…), is a generic placeholder.
+_GENERIC_SHEET_RE = re.compile(
+    r"^(sheet|feuil|feuille|hoja|blad|blatt|recipe|recette|table|tabelle|page|pagina|"
+    r"tab|worksheet)\s*\d*$", re.I)
 _RECIPE_LABEL = re.compile(r"name\s+of\s+(?:the\s+)?recipe\s*[:\-]\s*(.+)", re.I)
 
 def _sheet_recipe_name(sheet):
-    """Use the worksheet name as the recipe name, unless it's a generic tab name."""
+    """Use the worksheet name as the recipe name, unless it's a generic tab name
+    (Sheet6, Feuil2, Table1…) or a placeholder word."""
     s = re.sub(r"\s+", " ", str(sheet or "")).strip()
-    return None if not s or s.lower() in _GENERIC_SHEETS else s
+    if not s or s.lower() in _GENERIC_SHEETS or _GENERIC_SHEET_RE.match(s):
+        return None
+    return s
+
+_TITLE_STOP = re.compile(r"^(s[\.\s]*no|sr[\.\s]*no|ingredient|unit|qty|quantit|item\b|"
+                         r"method|procedure|process|yield|portion|total)\b", re.I)
+
+def _grid_title(rows):
+    """Last-resort recipe name: a bare TITLE cell sitting above the ingredient
+    table (e.g. 'Coconut Financier' with no 'Name of the recipe -' prefix). Scans
+    from the top and stops as soon as the ingredient header row begins."""
+    for row in rows:
+        for v in row:
+            t = str(v).strip()
+            if not t:
+                continue
+            if _TITLE_STOP.match(t):                # reached the ingredient header
+                return None
+            if (_JUNK.search(t) or _CAT_RE.match(t) or _NAME_RE.match(t)
+                    or _RECIPE_LABEL.match(t) or _METHOD_START.match(t)):
+                continue
+            if 3 <= len(t) <= 60 and any(c.isalpha() for c in t) and not t.replace(".", "").isdigit():
+                return _clean(t)                    # first plausible title wins
+    return None
 
 def _scan_grid_meta(rows):
-    """Pull recipe name / category / process from scattered cells in a grid."""
+    """Pull recipe name / category / process from a grid. Returns the name found
+    from the EXPLICIT in-table label separately from a weaker inline match, so the
+    caller can prefer the authoritative one over a generic sheet tab."""
     cells = [str(v).strip() for row in rows for v in row if str(v).strip()]
-    name = None
-    for t in cells:                                    # 'Name of the recipe - X'
+    label_name = None                                  # 'Name of the recipe - X' (authoritative)
+    for t in cells:
         m = _RECIPE_LABEL.match(t)
         if m:
-            name = _clean(m.group(1)); break
-    if name is None:
-        for t in cells:
-            m = _NAME_RE.match(t)
-            if m and not _JUNK.search(t):
-                name = _clean(m.group(2)); break
+            label_name = _clean(m.group(1)); break
+    weak_name = None                                   # 'Item/Product/Name: X' (weaker)
+    for t in cells:
+        m = _NAME_RE.match(t)
+        if m and not _JUNK.search(t):
+            weak_name = _clean(m.group(2)); break
     cat = ""
     for t in cells:
         m = _CAT_RE.match(t)
         if m:
             cat = _clean(m.group(2)); break
-    return name, cat, _grid_process(rows)
+    return label_name, weak_name, cat, _grid_process(rows)
 
 
 def _grid_process(rows):
@@ -327,9 +357,13 @@ class HeuristicExtractor:
             ings = _ingredients_from_table(rows)
             if not ings:
                 continue
-            cell_name, cat, proc = _scan_grid_meta(rows)
+            label_name, weak_name, cat, proc = _scan_grid_meta(rows)
             sheet = b.get("sheet", "") if isinstance(b, dict) else ""
-            name = _sheet_recipe_name(sheet) or cell_name or path.stem
+            # Priority: the explicit "Name of the recipe" cell (what the chef wrote)
+            # wins over the tab name; a real (non-generic) tab name beats a bare
+            # title cell; a weak inline match; filename is the last resort.
+            name = (label_name or _sheet_recipe_name(sheet) or _grid_title(rows)
+                    or weak_name or path.stem)
             recipes.append({"recipe_name": name, "category_hint": cat,
                             "process": proc, "ingredients": ings})
         return recipes
